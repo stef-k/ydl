@@ -1,11 +1,13 @@
 """Exercise queue controls and diagnostics while the dashboard is on screen."""
 
 import asyncio
+import hashlib
 from dataclasses import replace
+from threading import Event as ThreadEvent
 from unittest.mock import patch
 
 from ydl import jobs, runner
-from ydl.models import Result, YdlError
+from ydl.models import Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import Confirm
 from ydl.tui_queue import QueueFile
@@ -14,6 +16,40 @@ from tui_pilot import PilotCase
 
 
 class FeedbackTests(PilotCase):
+    async def test_quit_cancels_receipt_verification_and_waits_for_cleanup(self):
+        row = replace(self.entry("A"), status="interrupted")
+        self.disk.save([row])
+        item = jobs.make_item(1, "A", "Song", False)
+        mp3 = self.output / f"{item.stem}.mp3"
+        mp3.touch()
+        item.outputs["mp3"] = {"name": mp3.name, "sha256": hashlib.sha256(b"").hexdigest()}
+        store = jobs.JobStore(self.paths.state)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, Settings("single", "0", False, self.output), [item],
+                                      enqueued_base=row.output))
+        verifying, cancelling, release = ThreadEvent(), ThreadEvent(), ThreadEvent()
+        sha256 = jobs._sha256
+
+        def slow_hash(path, *, stop):
+            verifying.set()
+            while not release.wait(0.01):
+                if stop.is_set():
+                    cancelling.set()
+            return sha256(path, stop=stop)
+
+        app = self.app()
+        with patch.object(jobs, "_sha256", side_effect=slow_hash):
+            async with app.run_test(size=(80, 24)) as pilot:
+                try:
+                    await self.wait_for(pilot, lambda: verifying.is_set() and app.session.backend.check is None)
+                    await pilot.press("ctrl+q")
+                    await self.wait_for(pilot, cancelling.is_set)
+                    self.assertIsNone(app.return_code)
+                finally:
+                    release.set()
+                await self.wait_for(pilot, lambda: app.return_code == 0)
+        self.assertEqual(self.disk.read(), [row])
+
     async def test_stop_at_worker_entry_preserves_failed_hint(self):
         row = replace(self.entry("A"), status="failed_before_plan")
         self.disk.save([row])

@@ -71,6 +71,14 @@ class RenderTests(PilotCase):
             await pilot.pause()
             self.assertTrue(any("Start queue" in line for line in self.rendered_lines(app)))
 
+            await pilot.resize_terminal(100, 35)
+            await pilot.pause()
+            destination = app.dashboard.query_one("#destination")
+            media_options = app.dashboard.query_one("#media-options")
+            self.assertGreater(destination.region.y, media_options.region.y)
+            self.assertTrue(any("~/Downloads/ydl" in line and "Browse" in line
+                                for line in self.rendered_lines(app)))
+
             quality = app.dashboard.query_one("#quality", Select)
             retain = app.dashboard.query_one("#retain", Checkbox)
             for width in (60, 48):
@@ -136,6 +144,8 @@ class RenderTests(PilotCase):
             for width, height in ((150, 38), (220, 55)):
                 await pilot.resize_terminal(width, height)
                 await pilot.pause()
+                self.assertEqual(app.dashboard.query_one("#destination").region.y,
+                                 app.dashboard.query_one("#media-options").region.y)
                 lines = self.rendered_lines(app)
                 active = next(line for line in lines if "Downloading 3/24" in line)
                 complete = next(line for line in lines if "Night City Mix" in line)
@@ -216,3 +226,9 @@ class RenderTests(PilotCase):
             self.assertTrue(await pilot.click(choices[1]))
             await pilot.click("#scope-confirm")
             self.assertEqual(await task, "playlist")
+
+            task = app.own(app.decide(decision))
+            await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
+            await pilot.press("enter")
+            self.assertTrue(task.done())
+            self.assertEqual(task.result(), "single")

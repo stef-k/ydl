@@ -14,8 +14,9 @@ class QueueSession:
     def __init__(self, paths, disk, changed, decide):
         self.paths, self.changed, self.decide = paths, changed, decide
         self.store = jobs.JobStore(paths.state)
-        self.index = QueueIndex(disk, self.store, self.index_changed)
+        self.index = QueueIndex(disk, self.store, self.index_changed, self.inspect)
         self.backend = BackendReadiness(paths, self.backend_changed)
+        self.inspections = set()
         self.serial = None
         self.operation = None
         self.armed = False
@@ -205,6 +206,8 @@ class QueueSession:
         diagnostic = str(exc) or "Download stopped."
         if isinstance(exc, jobs.OccupiedPlan):
             observed = await self.inspect(entry.id, entry)
+            if observed is None:
+                return replace(entry, diagnostic=diagnostic), view
             hint, display = classify(entry, observed, self.store)
             return replace(entry, status=hint, diagnostic=diagnostic), display
         if isinstance(exc, jobs.MissingPlan):
@@ -225,14 +228,22 @@ class QueueSession:
             status = "failed" if planned else "failed_before_plan"
         labels = {"interrupted": "Interrupted", "pending": "Pending", "cancelled": "Cancelled",
                   "failed": "Failed", "failed_before_plan": "Failed"}
-        # Execution may have created a plan since the previous local inspection.
-        observation = view.inspection
-        if planned and observation is None:
-            observation = await self.inspect(entry.id, entry)
+        # The attempt may have published additional tracks before it stopped.
+        observation = await self.inspect(entry.id, entry) if planned else None
         return replace(entry, status=status, diagnostic=diagnostic), View(labels[status], observation)
 
     async def inspect(self, row_id, entry=None):
-        return await jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None)
+        if self.closing:
+            return None
+        task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
+        self.inspections.add(task)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if not self.closing:
+                raise
+        finally:
+            self.inspections.discard(task)
 
     async def entry_result(self, entry, result):
         if result.declined:
@@ -244,11 +255,12 @@ class QueueSession:
             return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", diagnostic=result.attention)
         hint = "failed" if result.failed else "complete"
         observed = await self.inspect(entry.id, entry)
-        _, display = classify(replace(entry, status=hint), observed, self.store)
         if result.attention:
             display = View("Needs attention", observed, result.attention)
-        elif observed.state == "missing":
+        elif observed is None or observed.state == "missing":
             display = View("Failed" if result.failed else "Complete")
+        else:
+            _, display = classify(replace(entry, status=hint), observed, self.store)
         return replace(entry, status=hint, diagnostic=diagnostic), display
 
     async def run_external(self, row_id, prefs):
@@ -268,6 +280,12 @@ class QueueSession:
                 self.changed()
 
     async def stop(self, *, quitting=False):
+        if quitting:
+            self.closing = True
+            # Cancel reads separately so in-flight queue writes can still settle.
+            for task in self.inspections:
+                if not task.cancelling():
+                    task.cancel()
         if self.stopping:
             if self.serial is not None:
                 await asyncio.shield(self.serial)

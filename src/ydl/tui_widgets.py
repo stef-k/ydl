@@ -199,7 +199,8 @@ class Dashboard(Screen):
     def on_mount(self):
         self.app.call_after_refresh(self.app.startup, self)
 
-    def on_resize(self):
+    def on_resize(self, event):
+        self.set_class(event.size.width >= 120, "-inline-destination")
         self.call_after_refresh(self.app.refresh_views)
 
     @on(Button.Pressed)

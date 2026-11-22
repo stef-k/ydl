@@ -134,8 +134,9 @@ def with_result(rows, result):
 class QueueIndex:
     """Serialize mutations without running a queue fsync on the UI thread."""
 
-    def __init__(self, disk, store, changed):
+    def __init__(self, disk, store, changed, inspect):
         self.disk, self.store, self.changed = disk, store, changed
+        self.inspect = inspect
         self.rows = []
         self.views = {}
         self.buffer = {}
@@ -169,8 +170,7 @@ class QueueIndex:
         if not self.admitted:
             return
         on_admitted()
-        await self.recheck()
-        if rows is not None and not self.error:
+        if await self.recheck() and rows is not None:
             pending = sum(self.view(row.id).status == "Pending" for row in self.rows)
             interrupted = sum(self.view(row.id).status == "Interrupted" for row in self.rows)
             self.restore_notice = f"Queue restored · {pending} Pending · {interrupted} Interrupted"
@@ -235,6 +235,8 @@ class QueueIndex:
         self.changed()
         try:
             updates = await asyncio.gather(*(self.verify(row) for row in targets))
+            if any(row is None for row in updates):
+                return False
             hints = {row.id: row for row in updates}
             async with self.lock:
                 if self.error and not self.recovering:
@@ -245,7 +247,9 @@ class QueueIndex:
             self.changed()
 
     async def verify(self, entry):
-        observation = await jobs.inspect_job(self.store, entry.id, enqueued=Path(entry.output))
+        observation = await self.inspect(entry.id, entry)
+        if observation is None:
+            return None
         hint, view = classify(entry, observation, self.store)
         if self.row(entry.id) is not None:
             self.views[entry.id] = view

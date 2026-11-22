@@ -232,28 +232,54 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 write()
         return serial
 
+    async def test_stop_refreshes_verified_outputs_of_a_resumed_playlist(self):
+        row = self.entry("A", status="interrupted")
+        plan = self.plan(row, "A", "B", scope="playlist")
+        session = await self.start(row)
+        published = asyncio.Event()
+
+        async def retry(*args, **kwargs):
+            with self.store.claim(row.id):
+                self.save_mp3(plan, plan.items[0])
+                self.store.save(plan)
+                published.set()
+                await asyncio.Future()
+
+        with patch.object(runner, "retry", side_effect=retry):
+            session.arm("start")
+            async with asyncio.timeout(4):
+                await published.wait()
+                await session.stop()
+        view = session.index.view(row.id)
+        self.assertEqual(view.status, "Interrupted")
+        self.assertEqual(view.inspection.verified, 1)
+        self.assertEqual(self.disk.read()[0].status, "interrupted")
+
     async def test_verification_holds_lock_and_gates_failed_snapshot(self):
         first, second = [self.entry(name, status="failed") for name in "AB"]
-        first_plan = self.plan(first, "A")
+        first_plan = self.plan(first, "A", "B", scope="playlist")
+        mp3 = self.save_mp3(first_plan, first_plan.items[0])
+        self.store.save(first_plan)
         self.plan(second, "B")
         checking = asyncio.Event()
         release = ThreadEvent()
         loop = asyncio.get_running_loop()
-        admit = jobs.admitted_read
+        sha256 = jobs._sha256
 
-        def paused_admission(path, validate):
-            if path == self.store.path(first.id):
+        def paused_verification(path, *, stop):
+            if path == mp3:
                 loop.call_soon_threadsafe(checking.set)
                 if not release.wait(4):
-                    raise TimeoutError("Plan admission blocked verification progress")
-            return admit(path, validate)
+                    raise TimeoutError("Receipt verification was not released")
+            return sha256(path, stop=stop)
 
         self.disk.save([first, second])
         session = self.make_session()
-        with patch.object(jobs, "admitted_read", side_effect=paused_admission):
+        with patch.object(jobs, "_sha256", side_effect=paused_verification):
             opening = asyncio.create_task(session.open())
             try:
-                await checking.wait()
+                async with asyncio.timeout(4):
+                    await checking.wait()
                 await self.wait(lambda: session.index.view(second.id).status == "Failed")
                 self.assertEqual(session.index.view(first.id).status, "Verifying")
                 session.arm("failed")
@@ -267,7 +293,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(runner, "retry", return_value=Result(failed=1)) as retry:
             await self.run_queue(session, "failed")
             self.assertEqual([call.args[0] for call in retry.call_args_list], [first.id, second.id])
-        self.save_mp3(first_plan, first_plan.items[0])
+        self.save_mp3(first_plan, first_plan.items[1])
         self.store.save(first_plan)
         self.assertEqual((await self.cli_retry(first.id))[0], 0)
         await session.index.recheck(first.id)

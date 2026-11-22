@@ -95,6 +95,8 @@ class Confirm(Panel):
 
 
 class RunnerPrompt(Panel):
+    BINDINGS = [Binding("enter", "confirm_focused_scope", show=False, priority=True)]
+
     def __init__(self, decision):
         super().__init__()
         self.decision = decision
@@ -124,7 +126,18 @@ class RunnerPrompt(Panel):
 
     @on(Button.Pressed, "#scope-confirm")
     def scope_confirmed(self):
-        index = self.query_one(RadioSet).pressed_index
+        self.confirm_scope(self.query_one(RadioSet).pressed_index)
+
+    def check_action(self, action, parameters):
+        if action == "confirm_focused_scope":
+            return self.scope and isinstance(self.focused, RadioSet)
+        return super().check_action(action, parameters)
+
+    def action_confirm_focused_scope(self):
+        focused_option = self.query_one("RadioButton.-selected", RadioButton)
+        self.confirm_scope(list(self.query(RadioButton)).index(focused_option))
+
+    def confirm_scope(self, index):
         self.dismiss(self.decision.choices[index][0])
 
     @on(Button.Pressed)

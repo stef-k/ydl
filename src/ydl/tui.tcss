@@ -65,8 +65,8 @@ Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layou
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
 Dashboard.-wide.-tall #action-area { dock: none; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
-Dashboard.-wide.-tall #form-options { layout: horizontal; }
-Dashboard.-wide.-tall #media-options { width: 72; }
+Dashboard.-inline-destination.-tall #form-options { layout: horizontal; }
+Dashboard.-inline-destination.-tall #media-options { width: 72; }
 Dashboard.-wide #queue-panel { height: auto; }
 Dashboard.-wide #queue { height: auto; min-height: 3; max-height: 50vh; }
 Dashboard.-wide.-tall #transfer { height: 4; padding: 1; }
