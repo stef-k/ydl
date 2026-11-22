@@ -172,7 +172,7 @@ python3 -m venv .venv
 ```
 
 CI runs the tests without downloading from YouTube. See the
-[CLI specification](ydl-cli-spec.md) for the complete behavior and the live
+[CLI specification](spec/ydl-cli-spec.md) for the complete behavior and the live
 smoke test, and the [changelog](CHANGELOG.md) for changes.
 
 ydl is available under the [MIT License](LICENSE). Third-party tools retain
