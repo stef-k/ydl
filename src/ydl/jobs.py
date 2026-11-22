@@ -16,11 +16,37 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import atomic_write, quality_value
+from .config import admitted_read, atomic_write, quality_value
+from .media import ID
 from .models import Settings, YdlError
+from .process import inherit_lock
 
 JOB_ID = re.compile(r"[0-9a-f]{32}")
 EXTENSION = re.compile(r"\.[a-zA-Z0-9]{1,12}")
+
+
+class JobBusy(YdlError):
+    pass
+
+
+class MissingPlan(YdlError):
+    pass
+
+
+class OccupiedPlan(YdlError):
+    pass
+
+
+class PlanNeedsSync(YdlError):
+    pass
+
+
+class OutputConflict(YdlError):
+    pass
+
+
+class DestinationChanged(YdlError):
+    pass
 
 
 @dataclass
@@ -31,6 +57,7 @@ class Item:
     stem: str
     outputs: dict[str, dict[str, str]] = field(default_factory=dict)
     source: str | None = None
+    video_target: str | None = None
 
 
 @dataclass
@@ -43,11 +70,12 @@ class Job:
     keep_video: bool
     items: list[Item]
     complete: bool = False
+    enqueued_base: str | None = None
 
     @classmethod
-    def create(cls, job_id, settings, items):
+    def create(cls, job_id, settings, items, *, enqueued_base=None):
         return cls(job_id, time.time_ns(), settings.scope, str(settings.destination),
-                   settings.quality, settings.keep_video, items)
+                   settings.quality, settings.keep_video, items, enqueued_base=enqueued_base)
 
     @property
     def settings(self):
@@ -71,7 +99,7 @@ def make_item(position, video_id, title, playlist):
 
 
 def component(name):
-    if not isinstance(name, str) or not name or name in (".", "..") or Path(name).name != name:
+    if not isinstance(name, str) or not name or "\x00" in name or name in (".", "..") or Path(name).name != name:
         raise YdlError("The saved job contains an invalid filename.")
     return name
 
@@ -87,32 +115,100 @@ def local_directory(path, *, create=True):
     return path
 
 
+def safe_destination(path):
+    """Check an enqueued absolute path without resolving redirects."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise DestinationChanged(f"Invalid saved destination: {path}. Restore the folder and Recheck.")
+    for folder in (*reversed(path.parents), path):
+        try:
+            info = folder.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise DestinationChanged(f"Cannot access destination {path}: {exc}. Restore the folder and Recheck.") from exc
+        if not stat.S_ISDIR(info.st_mode) or not os.access(folder, os.R_OK | os.X_OK):
+            raise DestinationChanged(f"Cannot use destination {path}: expected a readable real directory at {folder}. "
+                                     "Restore the folder and Recheck.")
+    return info.st_dev, info.st_ino
+
+
+@dataclass(frozen=True)
+class DestinationGuard:
+    identities: dict[Path, tuple[int, int]]
+
+    @classmethod
+    def capture(cls, base, destination):
+        guard = cls({path: safe_destination(path) for path in (base, destination)})
+        guard.check()
+        return guard
+
+    def check(self):
+        for path, expected in self.identities.items():
+            if expected is None or safe_destination(path) != expected:
+                raise DestinationChanged(f"Destination changed during the download: {path}. "
+                                         "Restore the original folder and Recheck.")
+
+
+def validate_item(item, position):
+    if type(item.position) is not int or item.position != position or not isinstance(item.title, str):
+        raise ValueError("invalid saved item position or title")
+    if item.video_id is not None and not ID.fullmatch(item.video_id):
+        raise ValueError("invalid saved video ID")
+    component(item.stem)
+    for name in (item.source, item.video_target):
+        if name is not None:
+            component(name)
+    for kind, receipt in item.outputs.items():
+        if kind not in ("mp3", "video") or not re.fullmatch(r"[0-9a-f]{64}", receipt["sha256"]):
+            raise ValueError("invalid saved output receipt")
+        component(receipt["name"])
+
+
+def validate_job(raw, job_id):
+    fields = json.loads(raw)
+    items = [Item(**entry) for entry in fields.pop("items")]
+    job = Job(items=items, **fields)
+    destination = Path(job.destination)
+    if job.id != job_id or not destination.is_absolute() or "\x00" in job.destination:
+        raise ValueError("invalid job ID or destination")
+    if job.scope not in ("single", "playlist") or type(job.keep_video) is not bool:
+        raise ValueError("invalid saved settings")
+    if type(job.created_at) is not int or type(job.complete) is not bool or not items:
+        raise ValueError("invalid job timestamp, completion flag or item list")
+    if job.enqueued_base is not None:
+        base = Path(job.enqueued_base)
+        expected = destination if job.scope == "single" else destination.parent
+        if not base.is_absolute() or base != expected:
+            raise ValueError("invalid enqueued base directory")
+    quality_value(job.quality)
+    for position, item in enumerate(items, 1):
+        validate_item(item, position)
+    return job
+
+
 class JobStore:
     def __init__(self, state):
         self.directory = state / "jobs"
         self.logs = state / "logs"
 
-    def save(self, job):
-        atomic_write(self.directory / f"{job.id}.json", json.dumps(asdict(job), ensure_ascii=True).encode())
-
-    def load(self, job_id):
-        if not JOB_ID.fullmatch(job_id):
+    def path(self, job_id):
+        if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
             raise YdlError("Unknown job ID. Use the ID shown in a previous ydl result.", 2)
-        path = self.directory / f"{job_id}.json"
+        return self.directory / f"{job_id}.json"
+
+    def save(self, job):
+        atomic_write(self.path(job.id), json.dumps(asdict(job), ensure_ascii=True).encode(), durable=True)
+
+    def load(self, job_id, *, admit=False):
+        path = self.path(job_id)
         try:
-            fields = json.loads(path.read_bytes())
-            items = [Item(**entry) for entry in fields.pop("items")]
-            job = Job(items=items, **fields)
-            if job.id != job_id or not Path(job.destination).is_absolute():
-                raise ValueError("invalid job ID or destination")
-            if job.scope not in ("single", "playlist") or type(job.keep_video) is not bool:
-                raise ValueError("invalid saved settings")
-            quality_value(job.quality)
-            return job
+            return admitted_read(path, lambda raw: validate_job(raw, job_id)) if admit else validate_job(path.read_bytes(), job_id)
         except FileNotFoundError as exc:
-            raise YdlError(f"Unknown job ID: {job_id}", 2) from exc
-        except (TypeError, KeyError, ValueError, OSError) as exc:
-            raise YdlError(f"Cannot read saved job {job_id}: {exc}") from exc
+            if not os.path.lexists(path):
+                raise MissingPlan(f"Unknown job ID: {job_id}. Expected saved plan at {path}.", 2) from exc
+            raise PlanNeedsSync(f"Cannot read saved job at {path}: {exc}") from exc
+        except (AttributeError, TypeError, KeyError, ValueError, OSError, YdlError) as exc:
+            raise PlanNeedsSync(f"Cannot read or sync saved job at {path}: {exc}") from exc
 
     def select(self, job_id):
         if job_id is not None:
@@ -125,13 +221,33 @@ class JobStore:
         return job
 
     @contextmanager
-    def claim(self, job_id):
-        path = self.directory / f"{job_id}.lock"
-        with path.open("a") as lock:
+    def claim(self, job_id, *, new=False):
+        path = self.path(job_id)
+        if not new and not os.path.lexists(path):
+            raise MissingPlan(f"Unknown job ID: {job_id}. Expected saved plan at {path}.", 2)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(".lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise YdlError(f"Job {job_id} is already running. Wait for it to finish.") from exc
+                raise JobBusy(f"Job already running: {job_id}. Wait for it to finish.") from exc
+            with inherit_lock(lock.fileno()):
+                yield
+
+    @contextmanager
+    def observe(self, job_id):
+        path = self.path(job_id).with_suffix(".lock")
+        try:
+            lock = path.open("r")
+        except FileNotFoundError as exc:
+            if not os.path.lexists(self.path(job_id)):
+                raise MissingPlan(str(self.path(job_id))) from exc
+            raise PlanNeedsSync(f"Missing job lock: {path}. Use ydl retry {job_id} to acquire it.") from exc
+        with lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise JobBusy(f"Job already running: {job_id}. Wait for it to finish.") from exc
             yield
 
 
@@ -148,19 +264,19 @@ async def sha256(path):
 
 
 def collision(path):
-    return YdlError(f"Output already exists: {path}. Move it aside and retry, or start a new job with --output.")
+    return OutputConflict(f"Output already exists: {path}. Move it aside and retry, or start a new job with --output.")
 
 
 async def pending_outputs(job, item):
     destination = Path(job.destination)
     names = {"mp3": f"{component(item.stem)}.mp3"}
     if job.keep_video:
-        names["video"] = item.outputs.get("video", {}).get("name")
+        names["video"] = item.outputs.get("video", {}).get("name", item.video_target)
     missing = {}
     for kind, name in names.items():
         path = destination / component(name) if name is not None else None
         if path is None or not os.path.lexists(path):
-            missing[kind] = path
+            missing[kind] = path if kind == "mp3" or kind in item.outputs else None
             continue
         receipt = item.outputs.get(kind, {})
         try:
@@ -168,10 +284,73 @@ async def pending_outputs(job, item):
                     and await sha256(path) == receipt.get("sha256")):
                 continue
         except FileNotFoundError:
-            missing[kind] = path
+            missing[kind] = path if kind == "mp3" or kind in item.outputs else None
             continue
         raise collision(path)
     return missing
+
+
+@dataclass(frozen=True)
+class Inspection:
+    state: str
+    job: Job | None = None
+    verified: int = 0
+    output: Path | None = None
+    diagnostic: str = ""
+
+
+def inspect_destination(job):
+    destination = Path(job.destination)
+    if job.enqueued_base is not None:
+        safe_destination(Path(job.enqueued_base))
+        return safe_destination(destination) is not None
+    try:
+        local_directory(destination, create=False)
+    except FileNotFoundError:
+        return False
+    if not os.access(destination, os.R_OK | os.X_OK):
+        raise YdlError(f"Cannot access saved destination: {destination}")
+    return True
+
+
+async def inspect_job(store, job_id, *, enqueued=None):
+    """Inspect the plan and its receipts under the same lock used for retry."""
+    job = None
+    try:
+        with store.observe(job_id):
+            job = store.load(job_id)
+            if job.enqueued_base is not None or enqueued is not None:
+                job = store.load(job_id, admit=True)
+            if enqueued is not None:
+                safe_destination(enqueued)
+            return await inspect_outputs(job)
+    except MissingPlan:
+        if enqueued is not None:
+            try:
+                safe_destination(enqueued)
+            except DestinationChanged as exc:
+                return Inspection("blocked", diagnostic=str(exc))
+        return Inspection("missing")
+    except (OSError, YdlError) as exc:
+        return Inspection("blocked", job, diagnostic=str(exc))
+
+
+async def inspect_outputs(job):
+    if not inspect_destination(job):
+        return Inspection("unfinished", job)
+    verified = 0
+    diagnostic = ""
+    for item in job.items:
+        try:
+            if not await pending_outputs(job, item) and item.video_id:
+                verified += 1
+        except (OSError, YdlError) as exc:
+            diagnostic = diagnostic or str(exc)
+    output = Path(job.destination)
+    if job.scope == "single":
+        output = output / f"{job.items[0].stem}.mp3" if verified else None
+    state = "blocked" if diagnostic else "complete" if verified == len(job.items) else "unfinished"
+    return Inspection(state, job, verified, output, diagnostic)
 
 
 def staging_path(job, item):
@@ -195,7 +374,9 @@ def video_suffix(path):
     return path.suffix
 
 
-async def publish(store, job, item, outputs):
+async def publish(store, job, item, outputs, guard=None):
+    if guard:
+        guard.check()
     receipts = {}
     for kind, (staged, target) in outputs.items():
         if os.path.lexists(target):
@@ -204,6 +385,8 @@ async def publish(store, job, item, outputs):
     item.outputs.update(receipts)
     store.save(job)
     for staged, target in outputs.values():
+        if guard:
+            guard.check()
         try:
             publish_file(staged, target)
         except FileExistsError as exc:

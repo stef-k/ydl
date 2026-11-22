@@ -24,6 +24,16 @@ class Decision:
     question: str
     choices: tuple[tuple[str, str], ...]
     default: str
+    kind: str = ""
+    video_id: str | None = None
+    playlist_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BackendStatus:
+    state: str
+    version: str | None = None
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,6 +48,7 @@ class Event:
     percent: float | None = None
     speed: float | None = None
     eta: float | None = None
+    backend: BackendStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +60,8 @@ class Result:
     declined: bool = False
     job_id: str | None = None
     log: Path | None = None
+    attention: str = ""
+    destination_changed: bool = False
 
     @property
     def code(self) -> int:

@@ -2,10 +2,24 @@
 
 import asyncio
 import os
-import signal
+import sys
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+
+
+_ownership = ContextVar("process_ownership", default=())
+
+
+@contextmanager
+def inherit_lock(fd):
+    token = _ownership.set((*_ownership.get(), fd))
+    try:
+        yield
+    finally:
+        _ownership.reset(token)
 
 
 @dataclass(frozen=True)
@@ -38,34 +52,35 @@ async def read_lines(reader, callback):
         callback(buffer.decode(errors="replace"))
 
 
-def signal_group(pid, sig):
-    try:
-        os.killpg(pid, sig)
-    except ProcessLookupError:
-        pass
-
-
-async def stop(process, pending):
-    signal_group(process.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(asyncio.shield(pending), 2)
-    except TimeoutError:
-        signal_group(process.pid, signal.SIGKILL)
-        await pending
-    finally:
-        signal_group(process.pid, signal.SIGKILL)
-
-
 async def run(args, *, timeout=None, log=None, on_line=None):
     async with asyncio.timeout(timeout):
         return await run_child(args, log, on_line)
 
 
 async def run_child(args, log, on_line):
-    process = await asyncio.create_subprocess_exec(
-        *args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+    read_end, write_end = os.pipe()
+    spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+        sys.executable, "-m", "ydl._supervise", str(read_end), *args,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, start_new_session=True,
-    )
+        pass_fds=(read_end, *_ownership.get()),
+    ))
+    try:
+        process = await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        os.close(write_end)
+        process = await spawn
+        await process.communicate()
+        raise
+    except BaseException:
+        os.close(write_end)
+        raise
+    finally:
+        os.close(read_end)
+    return await collect(process, log, on_line, write_end)
+
+
+async def collect(process, log, on_line, lifetime):
     tail = deque(maxlen=40)
 
     def diagnostic(line):
@@ -73,18 +88,20 @@ async def run_child(args, log, on_line):
         if log is not None:
             log.write(line)
 
-    pending = asyncio.gather(
-        process.wait(),
+    stdout, stderr = map(asyncio.create_task, (
         process.stdout.read() if on_line is None else read_lines(process.stdout, on_line),
         read_lines(process.stderr, diagnostic),
-    )
+    ))
+    pending = asyncio.gather(process.wait(), stdout, stderr)
     try:
         code, stdout, _ = await asyncio.shield(pending)
     except BaseException:
-        try:
-            await stop(process, pending)
-        except Exception:
-            # Preserve the original failure, including cancellation.
-            pass
+        # Closing the lifetime pipe requests cleanup even if the tree forked.
+        os.close(lifetime)
+        results = await asyncio.gather(stdout, stderr, return_exceptions=True)
+        if any(isinstance(result, Exception) for result in results):
+            await process.communicate()
+        await asyncio.gather(pending, return_exceptions=True)
         raise
+    os.close(lifetime)
     return ProcessResult(code, stdout or b"", "\n".join(tail))

@@ -127,6 +127,8 @@ class Terminal:
             self.visible = True
 
     def emit(self, event):
+        if event.stage == "backend":
+            return
         if event.stage == "job":
             self.job_id = event.message
         elif event.stage == "settings":

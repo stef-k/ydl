@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import atomic_write
-from .models import Decide, Decision, Emit, Event, YdlError
+from .models import BackendStatus, Decide, Decision, Emit, Event, YdlError
 from .process import Log, run
 
 REPOSITORIES = {"stable": "yt-dlp/yt-dlp", "nightly": "yt-dlp/yt-dlp-nightly-builds"}
@@ -110,11 +110,16 @@ async def compare_backend(path, channel, *, installed, check, emit, log):
     state = "up to date" if current else "replacement available" if installed else "installation available"
     local = installed or ("unusable" if path.exists() else "missing")
     report = f"Installed: {local} | {channel}: {release.tag} | {state}"
-    if check or current:
+    if check:
+        return report
+    if current:
+        backend_status(emit, "Up to date", installed)
         return report
     emit(Event("updating", f"Installing yt-dlp {release.tag}"))
+    backend_status(emit, "Updating", installed)
     payload = verified(await fetch(release.asset("yt-dlp"), 32 * 1024 * 1024, log), digest)
     await install_backend(path, payload, release.tag, installed, log)
+    backend_status(emit, "Up to date", release.tag)
     return f"Installed yt-dlp {release.tag} ({channel})."
 
 
@@ -131,15 +136,21 @@ async def installation_lock(path):
         yield
 
 
+def backend_status(emit, state, version=None, detail=""):
+    emit(Event("backend", backend=BackendStatus(state, version, detail)))
+
+
 async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=False,
                          emit: Emit, log: Log):
     emit(Event("checking", "Checking yt-dlp"))
+    backend_status(emit, "Checking")
     installed = await backend_version(path, log)
     if no_update:
         if not installed:
             raise YdlError("The private yt-dlp backend is missing or unusable. Run ydl update.")
         return None
     if installed and not (prefs.auto_update or explicit):
+        backend_status(emit, "Ready · updates off", installed)
         return None
     try:
         async with asyncio.timeout(UPDATE_TIMEOUT):
@@ -149,6 +160,7 @@ async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=
             async with installation_lock(path):
                 installed = await backend_version(path, log)
                 if installed and not (prefs.auto_update or explicit):
+                    backend_status(emit, "Ready · updates off", installed)
                     return None
                 return await compare_backend(path, prefs.channel, installed=installed, check=False,
                                              emit=emit, log=log)
@@ -157,7 +169,9 @@ async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=
         log.write(f"Backend update failed: {detail}")
         if not explicit and (installed := await backend_version(path, log)):
             emit(Event("warning", f"yt-dlp update failed. Using {installed}. {detail}"))
+            backend_status(emit, "Ready · using installed version", installed, detail)
             return None
+        backend_status(emit, "Unavailable", installed, detail)
         raise YdlError(f"yt-dlp update failed: {detail}") from exc
 
 
