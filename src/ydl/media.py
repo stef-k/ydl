@@ -79,14 +79,14 @@ def selected_command(backend, runtime):
 
 def explanation(stderr, fallback):
     detail = stderr.lower()
-    if "requested format is not available" in detail or "no video formats found" in detail:
-        return "YouTube did not provide a usable requested format. Update yt-dlp or retry later."
     if "429" in detail or "too many requests" in detail:
         return "YouTube rate-limited the request. Wait and retry."
     if any(word in detail for word in ("sign in", "log in", "login required", "age-restricted")):
         return "YouTube requires authentication for this request."
     if any(word in detail for word in ("javascript runtime", "challenge solving failed", "n challenge")):
         return "YouTube challenge solving failed. Run ydl doctor and update the JavaScript runtime or yt-dlp."
+    if "requested format is not available" in detail or "no video formats found" in detail:
+        return "YouTube did not provide a usable requested format. Update yt-dlp or retry later."
     if any(word in detail for word in ("private video", "not available", "video unavailable", "removed")):
         return "This video or playlist is private, removed, or unavailable."
     if any(word in detail for word in ("timed out", "network", "unable to download", "connection", "http error")):

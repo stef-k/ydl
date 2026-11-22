@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import backend, jobs, media
-from .config import output_path
+from .config import output_path, quality_value
 from .models import Decide, Decision, Emit, Event, Result, Settings, YdlError
 from .process import Log
 
@@ -64,12 +64,13 @@ def playlist_entries(info):
         raise YdlError("YouTube did not return the complete playlist.")
     if not entries:
         raise YdlError("The playlist is empty or unavailable.")
+    expected = info.get("playlist_count")
+    if type(expected) is int and expected > len(entries):
+        raise YdlError("YouTube listed fewer playlist entries than reported. Retry when the full list is available.")
     return entries
 
 
 async def playlist_plan(address, request, deps, decide, log):
-    if media.is_mix(address.playlist):
-        raise YdlError("Auto-generated YouTube mixes are unsupported. Use --single for an individual video.")
     url = address.url("playlist")
     limit = media.PLAYLIST_LIMIT + 1
     probe = await media.metadata(deps.command, url, playlist=True, limit=limit, log=log)
@@ -135,7 +136,7 @@ async def download(request: Download, paths, prefs, *, emit: Emit, decide: Decid
     if scope == "playlist" and media.is_mix(address.playlist):
         raise YdlError("Auto-generated YouTube mixes are unsupported. Use --single for an individual video.")
     target = output_path(request.output if request.output is not None else prefs.output)
-    quality = request.quality if request.quality is not None else prefs.quality
+    quality = quality_value(request.quality if request.quality is not None else prefs.quality)
     job_id = uuid4().hex
     log = Log(paths.state / "logs" / f"{job_id}.log")
     deps = await prepare(paths, prefs, decide, emit, log, no_update=request.no_update)
@@ -147,8 +148,7 @@ async def download(request: Download, paths, prefs, *, emit: Emit, decide: Decid
     keep_video = await keep_video_for(request, prefs, decide)
     destination = create_destination(target, scope, info, address)
     settings = Settings(scope, quality, keep_video, destination)
-    job = jobs.Job.create(settings, planned_items(entries, scope == "playlist"))
-    job.id = job_id
+    job = jobs.Job.create(job_id, settings, planned_items(entries, scope == "playlist"))
     store = jobs.JobStore(paths.state)
     store.save(job)
     with store.claim(job.id):
@@ -171,11 +171,8 @@ async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = Non
         job = store.load(selected.id)
         log = Log(store.logs / f"{job.id}.log")
         destination = Path(job.destination)
-        if job.scope == "playlist":
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            jobs.local_directory(destination)
-        else:
-            destination.mkdir(parents=True, exist_ok=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        jobs.local_directory(destination)
         return await execute(job, store, paths, prefs, emit, decide, log)
 
 
@@ -231,12 +228,7 @@ async def staged_outputs(job, pending, source, deps, staging, item, log):
     return outputs
 
 
-async def process_item(job, item, store, deps, emit, log):
-    if not item.video_id:
-        raise YdlError("The playlist entry has no usable video ID.")
-    pending = await jobs.pending_outputs(job, item)
-    if not pending:
-        return
+async def process_item(job, item, pending, store, deps, emit, log):
     staging = jobs.staging_path(job, item)
     source = await staged_source(job, item, deps, emit, store, staging, log)
     emit(item_event(job, item, "converting"))
@@ -248,29 +240,33 @@ async def process_item(job, item, store, deps, emit, log):
         log.write(f"Could not remove staging files after publication: {exc}")
 
 
-async def requires_media(job):
+async def check_items(job):
+    checked = []
     for item in job.items:
-        if not item.video_id:
-            continue
         try:
-            if await jobs.pending_outputs(job, item):
-                return True
-        except (OSError, YdlError):
-            # An occupied or inaccessible output is reported per item.
-            continue
-    return False
+            if not item.video_id:
+                raise YdlError("The playlist entry has no usable video ID.")
+            checked.append((item, await jobs.pending_outputs(job, item), None))
+        except (OSError, YdlError) as exc:
+            checked.append((item, {}, exc))
+    return checked
 
 
 async def execute(job, store, paths, prefs, emit, decide, log, deps=None):
     emit(Event("job", job.id))
-    if deps is None and await requires_media(job):
+    emit(Event("checking", "Checking output files"))
+    checked = await check_items(job)
+    if deps is None and any(pending for _, pending, _ in checked):
         deps = await prepare(paths, prefs, decide, emit, log)
     emit(Event("settings", settings=job.settings))
     diagnostics = []
     saved = 0
-    for item in job.items:
+    for item, pending, error in checked:
         try:
-            await process_item(job, item, store, deps, emit, log)
+            if error:
+                raise error
+            if pending:
+                await process_item(job, item, pending, store, deps, emit, log)
             saved += 1
             emit(item_event(job, item, "saved"))
         except (OSError, TimeoutError, YdlError) as exc:

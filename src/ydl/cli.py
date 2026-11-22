@@ -94,16 +94,14 @@ async def doctor(paths, prefs):
 async def dispatch(command, args, paths, prefs, terminal):
     decide = terminal.decide if sys.stdin.isatty() else None
     if command == "download":
-        if args.quality is not None:
-            args.quality = config.quality_value(args.quality)
         result = await runner.download(runner.Download(**vars(args)), paths, prefs,
                                        emit=terminal.emit, decide=decide)
     elif command == "retry":
         result = await runner.retry(args.job_id, paths, prefs, emit=terminal.emit, decide=decide)
     elif command == "update":
-        terminal.log = paths.state / "logs" / "update.log"
+        log = Log(paths.state / "logs" / "update.log")
         report = await backend.ensure_backend(paths.backend, prefs, explicit=True, check=args.check,
-                                              emit=terminal.emit, log=Log(terminal.log))
+                                              emit=terminal.emit, log=log)
         terminal.finish(report)
         return 0
     elif command == "config":

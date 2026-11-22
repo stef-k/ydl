@@ -1,7 +1,7 @@
 # ydl — Python YouTube-to-MP3 CLI
 
 **Specification:** v1.0\
-**Target:** Linux Mint / Ubuntu, Python 3.11+  
+**Target:** Linux Mint / Ubuntu, Python 3.11+\
 **License:** MIT for the `ydl` project; third-party components retain their own licenses.
 
 ## 1. Goal

@@ -105,7 +105,6 @@ class Terminal:
         self.frame = 0
         self.job_id = None
         self.destination = None
-        self.log = None
 
     def write(self, text):
         print(text, end="", file=self.stream, flush=True)

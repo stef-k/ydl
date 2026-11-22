@@ -1,6 +1,8 @@
 """Persistent download plans and no-overwrite publication."""
 
 import asyncio
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -10,7 +12,6 @@ import shutil
 import stat
 import time
 import unicodedata
-import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -44,8 +45,8 @@ class Job:
     complete: bool = False
 
     @classmethod
-    def create(cls, settings, items):
-        return cls(uuid.uuid4().hex, time.time_ns(), settings.scope, str(settings.destination),
+    def create(cls, job_id, settings, items):
+        return cls(job_id, time.time_ns(), settings.scope, str(settings.destination),
                    settings.quality, settings.keep_video, items)
 
     @property
@@ -77,7 +78,10 @@ def component(name):
 
 def local_directory(path, *, create=True):
     if create:
-        path.mkdir(mode=0o700, exist_ok=True)
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
     if not stat.S_ISDIR(path.lstat().st_mode):
         raise YdlError(f"Expected a real directory at {path}. Move the conflicting entry or choose another output.")
     return path
@@ -133,7 +137,10 @@ class JobStore:
 
 async def sha256(path):
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise YdlError(f"Cannot verify a non-regular file: {path}")
         while data := stream.read(1024 * 1024):
             digest.update(data)
             await asyncio.sleep(0)
@@ -189,17 +196,32 @@ def video_suffix(path):
 
 
 async def publish(store, job, item, outputs):
+    receipts = {}
     for kind, (staged, target) in outputs.items():
         if os.path.lexists(target):
             raise collision(target)
-        item.outputs[kind] = {"name": target.name, "sha256": await sha256(staged)}
+        receipts[kind] = {"name": target.name, "sha256": await sha256(staged)}
+    item.outputs.update(receipts)
     store.save(job)
     for staged, target in outputs.values():
-        # Hard linking publishes the verified inode atomically and fails on an occupied name.
         try:
-            os.link(staged, target, follow_symlinks=False)
+            publish_file(staged, target)
         except FileExistsError as exc:
             raise collision(target) from exc
+
+
+def publish_file(staged, target):
+    try:
+        os.link(staged, target, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):
+            raise
+        # Linux supports atomic no-replace rename on filesystems without hard links.
+        at_fdcwd, rename_noreplace = -100, 1
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.renameat2(at_fdcwd, os.fsencode(staged), at_fdcwd, os.fsencode(target), rename_noreplace):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), target) from exc
 
 
 def remove_staging(staging):

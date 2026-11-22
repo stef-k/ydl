@@ -1,6 +1,7 @@
 """Installation, release checks and media dependencies."""
 
 import asyncio
+import fcntl
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,7 +77,7 @@ def backend_command(path):
 
 
 async def backend_version(path, log=None):
-    if not path.is_file() or not os.access(path, os.X_OK):
+    if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
         return None
     try:
         result = await run([*backend_command(path), "--version"], timeout=8, log=log)
@@ -101,7 +103,10 @@ async def compare_backend(path, channel, *, installed, check, emit, log):
     release = await latest(REPOSITORIES[channel], log)
     manifest = await fetch(release.asset("SHA2-256SUMS"), 512 * 1024, log)
     digest = checksum(manifest, "yt-dlp")
-    current = installed and hashlib.file_digest(path.open("rb"), "sha256").hexdigest() == digest
+    current = False
+    if installed:
+        with path.open("rb") as stream:
+            current = hashlib.file_digest(stream, "sha256").hexdigest() == digest
     state = "up to date" if current else "replacement available" if installed else "installation available"
     local = installed or ("unusable" if path.exists() else "missing")
     report = f"Installed: {local} | {channel}: {release.tag} | {state}"
@@ -111,6 +116,19 @@ async def compare_backend(path, channel, *, installed, check, emit, log):
     payload = verified(await fetch(release.asset("yt-dlp"), 32 * 1024 * 1024, log), digest)
     await install_backend(path, payload, release.tag, installed, log)
     return f"Installed yt-dlp {release.tag} ({channel})."
+
+
+@asynccontextmanager
+async def installation_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(".update.lock").open("a") as lock:
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.1)
+        yield
 
 
 async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=False,
@@ -125,12 +143,19 @@ async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=
         return None
     try:
         async with asyncio.timeout(UPDATE_TIMEOUT):
-            return await compare_backend(path, prefs.channel, installed=installed, check=check,
-                                         emit=emit, log=log)
+            if check:
+                return await compare_backend(path, prefs.channel, installed=installed, check=True,
+                                             emit=emit, log=log)
+            async with installation_lock(path):
+                installed = await backend_version(path, log)
+                if installed and not (prefs.auto_update or explicit):
+                    return None
+                return await compare_backend(path, prefs.channel, installed=installed, check=False,
+                                             emit=emit, log=log)
     except (TimeoutError, OSError, YdlError) as exc:
         detail = str(exc) or "release check timed out"
         log.write(f"Backend update failed: {detail}")
-        if installed and not explicit:
+        if not explicit and (installed := await backend_version(path, log)):
             emit(Event("warning", f"yt-dlp update failed. Using {installed}. {detail}"))
             return None
         raise YdlError(f"yt-dlp update failed: {detail}") from exc
