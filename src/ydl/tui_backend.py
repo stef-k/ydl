@@ -98,8 +98,15 @@ class BackendReadiness:
             self.check = None
             self.changed()
 
+    def executable_stamp(self):
+        try:
+            info = self.paths.backend.lstat()
+        except OSError:
+            return None
+        return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns
+
     async def prepare(self, allowed):
-        """Wait for readiness for the latest preferences, then check the installed binary."""
+        """Return current preferences and the identity of the probed executable."""
         while allowed():
             prefs = await self.read()
             if prefs is None or not allowed():
@@ -110,11 +117,13 @@ class BackendReadiness:
                 if admitted is False:
                     return None
                 continue
-            if self.ready_key == key and await backend.backend_version(self.paths.backend, self.log):
-                current = await self.read()
-                if current is not None and key == backend_key(current) and allowed():
-                    return current
-                continue
+            if self.ready_key == key:
+                stamp = self.executable_stamp()
+                if stamp is not None and await backend.backend_version(self.paths.backend, self.log):
+                    current = await self.read()
+                    if current is not None and key == backend_key(current) and allowed():
+                        return current, stamp
+                    continue
             self.ready_key = None
             if not allowed():
                 return None

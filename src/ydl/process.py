@@ -57,6 +57,22 @@ async def run(args, *, timeout=None, log=None, on_line=None):
         return await run_child(args, log, on_line)
 
 
+async def finish_cleanup(cleanup):
+    # A timeout and a user stop can cancel the same task in succession.
+    # Keep the original outcome and leave cleanup running until it settles.
+    work = asyncio.gather(cleanup, return_exceptions=True)
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            continue
+
+
+async def drain_spawn(spawn):
+    process = await spawn
+    await process.communicate()
+
+
 async def run_child(args, log, on_line):
     read_end, write_end = os.pipe()
     spawn = asyncio.create_task(asyncio.create_subprocess_exec(
@@ -69,8 +85,7 @@ async def run_child(args, log, on_line):
         process = await asyncio.shield(spawn)
     except asyncio.CancelledError:
         os.close(write_end)
-        process = await spawn
-        await process.communicate()
+        await finish_cleanup(drain_spawn(spawn))
         raise
     except BaseException:
         os.close(write_end)
@@ -78,6 +93,16 @@ async def run_child(args, log, on_line):
     finally:
         os.close(read_end)
     return await collect(process, log, on_line, write_end)
+
+
+async def drain_after_stop(process, readers, pending):
+    try:
+        results = await asyncio.gather(*readers, return_exceptions=True)
+        if any(isinstance(result, BaseException) for result in results):
+            await process.communicate()
+    finally:
+        await asyncio.gather(pending, return_exceptions=True)
+        await process.wait()
 
 
 async def collect(process, log, on_line, lifetime):
@@ -98,10 +123,7 @@ async def collect(process, log, on_line, lifetime):
     except BaseException:
         # Closing the lifetime pipe requests cleanup even if the tree forked.
         os.close(lifetime)
-        results = await asyncio.gather(stdout, stderr, return_exceptions=True)
-        if any(isinstance(result, Exception) for result in results):
-            await process.communicate()
-        await asyncio.gather(pending, return_exceptions=True)
+        await finish_cleanup(drain_after_stop(process, (stdout, stderr), pending))
         raise
     os.close(lifetime)
     return ProcessResult(code, stdout or b"", "\n".join(tail))

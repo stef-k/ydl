@@ -24,6 +24,8 @@ class PilotCase(unittest.IsolatedAsyncioTestCase):
         self.disk = QueueFile(self.paths.state)
         self.output = self.root / "output"
         self.output.mkdir()
+        self.paths.backend.parent.mkdir(parents=True)
+        self.paths.backend.touch(mode=0o700)
         self.backends = self.enterContext(patch.object(backend, "ensure_backend", return_value=None))
         self.versions = self.enterContext(patch.object(backend, "backend_version", return_value="2026.01.01"))
 

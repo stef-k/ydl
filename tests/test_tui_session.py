@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Event as ThreadEvent
 from unittest.mock import patch
 
-from ydl import backend, config, jobs, media, runner
+from ydl import backend, config, jobs, media, process, runner
 from ydl.models import Result, Settings, YdlError
 from ydl.tui_queue import Entry, QueueFile
 from ydl.tui_session import QueueSession
@@ -29,6 +29,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.output.mkdir()
         self.prefs = config.Preferences(output=str(self.output), auto_update=False)
         config.save(self.paths.config, asdict(self.prefs))
+        self.paths.backend.parent.mkdir(parents=True)
+        self.paths.backend.touch(mode=0o700)
         self.backend = self.enterContext(patch.object(backend, "ensure_backend", return_value=None))
         self.version = self.enterContext(patch.object(backend, "backend_version", return_value="2026.01.01"))
         self.decide = None
@@ -134,6 +136,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         row = self.entry("A")
         session = await self.start(row)
         await self.wait(lambda: session.backend.check is None)
+        self.paths.backend.unlink()
         self.version.return_value = None
 
         async def missing(*_args, **_kwargs):
@@ -145,6 +148,27 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             await self.run_queue(session, "start")
             download.assert_not_called()
         self.assertEqual(self.backend.await_count, 2)
+        self.assertEqual(self.disk.read(), [row])
+
+    async def test_dispatch_rechecks_backend_removed_while_waiting_for_queue_edit(self):
+        row = self.entry("A")
+        executable = self.paths.backend
+        session = await self.start(row)
+        await self.wait(lambda: session.backend.check is None)
+
+        async def version(*_args):
+            return "2026.01.01" if executable.exists() else None
+
+        self.version.side_effect = version
+        self.backend.side_effect = YdlError("Could not install backend")
+        with patch.object(self.disk, "save", wraps=self.disk.save) as save, \
+                patch.object(runner, "download", return_value=Result(saved=1)) as download:
+            serial = await self.change_at_dispatch(session, executable.unlink)
+            await asyncio.wait_for(serial, 4)
+            download.assert_not_called()
+            save.assert_not_called()
+        self.assertEqual(self.backend.await_count, 2)
+        self.assertEqual(session.backend.status.state, "Unavailable")
         self.assertEqual(self.disk.read(), [row])
 
     async def test_invalid_preferences_stop_selection_after_settlement(self):
@@ -172,7 +196,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.wait(lambda: session.backend.check is None)
 
         with patch.object(self.disk, "save") as save, patch.object(runner, "download") as download:
-            serial = await self.change_config_at_dispatch(session, lambda: self.paths.config.write_text("[[invalid"))
+            serial = await self.change_at_dispatch(session, lambda: self.paths.config.write_text("[[invalid"))
             await asyncio.wait_for(serial, 4)
             save.assert_not_called()
             download.assert_not_called()
@@ -198,7 +222,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.backend.side_effect = ensure
         with patch.object(self.disk, "save", wraps=self.disk.save) as save:
             with patch.object(runner, "download", return_value=Result(saved=1)) as download:
-                serial = await self.change_config_at_dispatch(
+                serial = await self.change_at_dispatch(
                     session, lambda: config.save(self.paths.config, asdict(changed)))
                 try:
                     await self.wait(lambda: self.backend.await_count == 2 or not session.busy)
@@ -215,7 +239,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend.await_count, 2)
         self.assertEqual([call.args[0][0].status for call in save.call_args_list], ["active", "complete"])
 
-    async def change_config_at_dispatch(self, session, write):
+    async def change_at_dispatch(self, session, change):
         waiting = asyncio.Event()
         lock = session.index.lock
         acquire = lock.acquire
@@ -229,8 +253,55 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 session.arm("start")
                 serial = session.serial
                 await asyncio.wait_for(waiting.wait(), 4)
-                write()
+                change()
         return serial
+
+    async def test_stop_waits_for_timed_out_command_cleanup(self):
+        session = await self.start(self.entry("A"), self.entry("B"))
+        ready, cleaning, release, exited = (self.root / name for name in ("ready", "cleaning", "release", "exited"))
+        command = """
+import signal, sys, time
+from pathlib import Path
+
+ready, cleaning, release, exited = map(Path, sys.argv[1:])
+
+def stop(*_):
+    cleaning.touch()
+    while not release.exists():
+        time.sleep(0.01)
+    exited.touch()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+ready.touch()
+while True:
+    time.sleep(0.01)
+"""
+        deadline = asyncio.timeout(None)
+
+        async def download(*_args, **_kwargs):
+            async with deadline:
+                await process.run([sys.executable, "-c", command, *map(str, (ready, cleaning, release, exited))])
+
+        with patch.object(runner, "download", side_effect=download) as attempt:
+            session.arm("start")
+            stop = None
+            try:
+                await self.wait(ready.exists)
+                deadline.reschedule(asyncio.get_running_loop().time())
+                await self.wait(cleaning.exists)
+                stop = asyncio.create_task(session.stop())
+                await asyncio.wait({stop}, timeout=0.2)
+                self.assertTrue(session.stopping)
+                session.arm("start")
+                attempt.assert_awaited_once()
+            finally:
+                release.touch()
+                if stop is not None:
+                    await asyncio.wait_for(stop, 4)
+                if cleaning.exists():
+                    await self.wait(exited.exists)
+            self.assertEqual([row.status for row in self.disk.read()], ["pending", "pending"])
 
     async def test_stop_refreshes_verified_outputs_of_a_resumed_playlist(self):
         row = self.entry("A", status="interrupted")

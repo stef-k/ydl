@@ -133,14 +133,17 @@ class QueueSession:
             while allowed() and self.next_id(mode, targets, attempted):
                 self.operation = asyncio.create_task(self.backend.prepare(allowed))
                 try:
-                    prefs = await self.operation
+                    prepared = await self.operation
                 except asyncio.CancelledError:
                     break
                 finally:
                     self.operation = None
-                if prefs is None or not allowed():
+                if prepared is None or not allowed():
                     break
+                prefs, stamp = prepared
                 if mode == "external":
+                    if stamp != self.backend.executable_stamp():
+                        continue
                     await self.run_external(targets[0], prefs)
                     break
                 async with self.index.lock:
@@ -150,6 +153,8 @@ class QueueSession:
                     # Release checks must run outside the queue mutation lock.
                     key = backend_key(current)
                     if key != backend_key(prefs) or key != self.backend.ready_key:
+                        continue
+                    if stamp != self.backend.executable_stamp():
                         continue
                     entry = self.index.row(self.next_id(mode, targets, attempted))
                     view = await self.index.activate(entry) if entry is not None else None
