@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
-from textual.widgets import RadioButton, TabbedContent, Tabs
+from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
 from ydl.models import BackendStatus, Decision, Event, Settings
@@ -62,6 +62,51 @@ class RenderTests(PilotCase):
     @staticmethod
     def rendered_lines(app):
         return [strip.text for strip in app.screen._compositor.render_strips()]
+
+    async def test_download_options_remain_visible_and_clickable_after_narrow_resize(self):
+        self.disk.save([self.entry("A")])
+        app = self.app()
+        async with app.run_test(size=(100, 24)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.pause()
+            self.assertTrue(any("Start queue" in line for line in self.rendered_lines(app)))
+
+            quality = app.dashboard.query_one("#quality", Select)
+            retain = app.dashboard.query_one("#retain", Checkbox)
+            for width in (60, 48):
+                await pilot.resize_terminal(width, 20)
+                await pilot.pause()
+                rendered = "\n".join(self.rendered_lines(app))
+                self.assertIn("MP3 quality", rendered)
+                self.assertIn("Keep video", rendered)
+                await pilot.click(quality)
+                self.assertTrue(quality.expanded)
+                await pilot.press("escape")
+                original = retain.value
+                self.assertTrue(await pilot.click(retain))
+                self.assertEqual(retain.value, not original)
+
+    async def test_restored_single_video_shows_verified_mp3_before_video_is_complete(self):
+        row = replace(self.entry("A", keep_video=True), status="interrupted")
+        self.disk.save([row])
+        store = jobs.JobStore(self.paths.state)
+        item = jobs.make_item(1, "A", "Song", False)
+        mp3 = self.output / f"{item.stem}.mp3"
+        mp3.write_bytes(b"saved MP3")
+        item.outputs["mp3"] = {"name": mp3.name, "sha256": hashlib.sha256(mp3.read_bytes()).hexdigest()}
+        item.video_target = f"{item.stem}.mp4"
+        settings = Settings("single", "0", True, self.output)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, settings, [item], enqueued_base=row.output))
+
+        app = self.app()
+        async with app.run_test(size=(100, 24)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.pause()
+            rendered = "\n".join(self.rendered_lines(app))
+            self.assertIn(mp3.name, next(line for line in rendered.splitlines() if "Song" in line))
+            self.assertTrue(app.session.selected_retry(row.id))
+            self.assertIn("Resume queue", rendered)
 
     async def test_rendered_transfer_keeps_metrics_below_wide_title(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):

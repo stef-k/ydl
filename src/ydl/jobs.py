@@ -15,6 +15,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from threading import Event
 
 from .config import admitted_read, atomic_write, quality_value
 from .media import ID
@@ -270,16 +271,29 @@ class JobStore:
             yield
 
 
-async def sha256(path):
+async def _run_file_check(check, *args):
+    stop = Event()
+    worker = asyncio.create_task(asyncio.to_thread(check, *args, stop=stop))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Keep the caller's job lock until any in-flight file read has finished.
+        stop.set()
+        await asyncio.gather(worker, return_exceptions=True)
+        raise
+
+
+def _sha256(path, *, stop):
     digest = hashlib.sha256()
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise YdlError(f"Cannot verify a non-regular file: {path}")
-        while data := stream.read(1024 * 1024):
+        while not stop.is_set():
+            if not (data := stream.read(1024 * 1024)):
+                return digest.hexdigest()
             digest.update(data)
-            await asyncio.sleep(0)
-    return digest.hexdigest()
+    raise asyncio.CancelledError
 
 
 def collision(path):
@@ -287,26 +301,43 @@ def collision(path):
 
 
 async def pending_outputs(job, item):
+    missing, _, error = await _run_file_check(_check_item_outputs, job, item)
+    if error is not None:
+        raise error
+    return missing
+
+
+def _check_item_outputs(job, item, *, stop):
+    if stop.is_set():
+        raise asyncio.CancelledError
     destination = Path(job.destination)
     names = {"mp3": f"{component(item.stem)}.mp3"}
     if job.keep_video:
         names["video"] = item.outputs.get("video", {}).get("name", item.video_target)
     missing = {}
+    mp3 = None
     for kind, name in names.items():
         path = destination / component(name) if name is not None else None
-        if path is None or not os.path.lexists(path):
-            missing[kind] = path if kind == "mp3" or kind in item.outputs else None
-            continue
-        receipt = item.outputs.get(kind, {})
         try:
-            if (receipt.get("name") == name and stat.S_ISREG(path.lstat().st_mode)
-                    and await sha256(path) == receipt.get("sha256")):
-                continue
-        except FileNotFoundError:
+            verified = path is not None and _verify_output(path, item.outputs.get(kind, {}), stop=stop)
+        except (OSError, YdlError) as exc:
+            return missing, mp3, exc
+        if not verified:
             missing[kind] = path if kind == "mp3" or kind in item.outputs else None
-            continue
-        raise collision(path)
-    return missing
+        elif kind == "mp3":
+            mp3 = path
+    return missing, mp3, None
+
+
+def _verify_output(path, receipt, *, stop):
+    try:
+        mode = path.lstat().st_mode
+        if (receipt.get("name") == path.name and stat.S_ISREG(mode)
+                and _sha256(path, stop=stop) == receipt.get("sha256")):
+            return True
+    except FileNotFoundError:
+        return False
+    raise collision(path)
 
 
 @dataclass(frozen=True)
@@ -334,6 +365,10 @@ def inspect_destination(job):
 
 async def inspect_job(store, job_id, *, enqueued=None):
     """Inspect the plan and its receipts under the same lock used for retry."""
+    return await _run_file_check(_inspect_job, store, job_id, enqueued)
+
+
+def _inspect_job(store, job_id, enqueued, *, stop):
     job = None
     try:
         with store.observe(job_id):
@@ -343,7 +378,7 @@ async def inspect_job(store, job_id, *, enqueued=None):
                 job = store.load(job_id, admit=True)
             if enqueued is not None:
                 safe_destination(enqueued)
-            return await inspect_outputs(job)
+            return _inspect_outputs(job, stop=stop)
     except MissingPlan:
         if enqueued is not None:
             try:
@@ -355,21 +390,20 @@ async def inspect_job(store, job_id, *, enqueued=None):
         return Inspection("blocked", job, diagnostic=str(exc))
 
 
-async def inspect_outputs(job):
+def _inspect_outputs(job, *, stop):
+    output = Path(job.destination) if job.scope == "playlist" else None
     if not inspect_destination(job):
-        output = Path(job.destination) if job.scope == "playlist" else None
         return Inspection("unfinished", job, output=output)
     verified = 0
     diagnostic = ""
     for item in job.items:
-        try:
-            if not await pending_outputs(job, item) and item.video_id:
-                verified += 1
-        except (OSError, YdlError) as exc:
-            diagnostic = diagnostic or str(exc)
-    output = Path(job.destination)
-    if job.scope == "single":
-        output = output / f"{job.items[0].stem}.mp3" if verified else None
+        missing, mp3, error = _check_item_outputs(job, item, stop=stop)
+        if job.scope == "single" and item.position == 1:
+            output = mp3
+        if error is not None:
+            diagnostic = diagnostic or str(error)
+        elif not missing and item.video_id:
+            verified += 1
     state = "blocked" if diagnostic else "complete" if verified == len(job.items) else "unfinished"
     return Inspection(state, job, verified, output, diagnostic)
 
@@ -402,7 +436,7 @@ async def publish(store, job, item, outputs, guard=None):
     for kind, (staged, target) in outputs.items():
         if os.path.lexists(target):
             raise collision(target)
-        receipts[kind] = {"name": target.name, "sha256": await sha256(staged)}
+        receipts[kind] = {"name": target.name, "sha256": await _run_file_check(_sha256, staged)}
     item.outputs.update(receipts)
     store.save(job)
     for staged, target in outputs.values():

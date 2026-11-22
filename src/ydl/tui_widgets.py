@@ -163,11 +163,13 @@ class Dashboard(Screen):
                                    placeholder="Paste YouTube URLs · one per line", soft_wrap=False, tab_behavior="focus")
                     yield button("＋ Add to Queue", "add-urls", "primary")
                 with Vertical(id="form-options"):
-                    with Horizontal(id="media-options", classes="form-line"):
-                        yield label("Scope", "field-label")
-                        yield select(SCOPE_CHOICES, "auto", "scope")
-                        yield label("MP3 quality", "field-label")
-                        yield select(quality_options("0"), "0", "quality")
+                    with Vertical(id="media-options"):
+                        with Horizontal(classes="form-line"):
+                            yield label("Scope", "field-label")
+                            yield select(SCOPE_CHOICES, "auto", "scope")
+                        with Horizontal(classes="form-line"):
+                            yield label("MP3 quality", "field-label")
+                            yield select(quality_options("0"), "0", "quality")
                         yield Checkbox("Keep video", id="retain", compact=True)
                     with Horizontal(classes="form-line"):
                         yield label("Save to", "field-label")

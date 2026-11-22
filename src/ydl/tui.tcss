@@ -25,6 +25,8 @@ TextArea .text-area--selection { background: #245baf; }
 .panel { height: auto; border: solid $ydl-outline; background: $ydl-panel; }
 #form { padding: 0 1; }
 #form-options { height: auto; }
+#media-options { height: auto; }
+#media-options .form-line { width: auto; }
 #form .form-line { margin-bottom: 0; }
 .form-line { height: 1; margin-bottom: 1; }
 .form-line .field-label { width: auto; padding: 0 1 0 0; }
@@ -59,6 +61,7 @@ JobTable > .datatable--header-cursor { background: #1d55a0; }
 #recover { margin-right: 0; }
 
 Dashboard.-wide #tagline { display: block; }
+Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
 Dashboard.-wide.-tall #action-area { dock: none; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
@@ -69,6 +72,7 @@ Dashboard.-wide #queue { height: auto; min-height: 3; max-height: 50vh; }
 Dashboard.-wide.-tall #transfer { height: 4; padding: 1; }
 Dashboard.-wide #controls { padding: 0 1; }
 Dashboard.-wide #controls Button { padding: 0 1; margin-right: 1; }
+Dashboard.-wide #primary { width: 16; }
 
 ModalScreen { align: center middle; background: #030a17 55%; }
 .dialog { width: 72; max-width: 96%; height: auto; max-height: 96%; background: $ydl-panel; border: solid #79acf0; }

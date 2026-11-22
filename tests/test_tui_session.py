@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
+from threading import Event as ThreadEvent
 from unittest.mock import patch
 
 from ydl import backend, config, jobs, media, runner
@@ -236,18 +237,20 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         first_plan = self.plan(first, "A")
         self.plan(second, "B")
         checking = asyncio.Event()
-        release = asyncio.Event()
-        inspect_outputs = jobs.pending_outputs
+        release = ThreadEvent()
+        loop = asyncio.get_running_loop()
+        admit = jobs.admitted_read
 
-        async def verify(job, item):
-            if job.id == first.id:
-                checking.set()
-                await release.wait()
-            return await inspect_outputs(job, item)
+        def paused_admission(path, validate):
+            if path == self.store.path(first.id):
+                loop.call_soon_threadsafe(checking.set)
+                if not release.wait(4):
+                    raise TimeoutError("Plan admission blocked verification progress")
+            return admit(path, validate)
 
         self.disk.save([first, second])
         session = self.make_session()
-        with patch.object(jobs, "pending_outputs", side_effect=verify):
+        with patch.object(jobs, "admitted_read", side_effect=paused_admission):
             opening = asyncio.create_task(session.open())
             try:
                 await checking.wait()
