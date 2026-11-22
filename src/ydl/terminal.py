@@ -55,16 +55,24 @@ def settings_line(settings):
     return f"{scope} | MP3 {quality} | Keep video {retention} | {display_path(settings.destination)}"
 
 
+def format_speed(speed):
+    divisor, unit = (1048576, "MiB") if speed >= 1048576 else (1024, "KiB")
+    return f"{speed / divisor:.1f} {unit}/s"
+
+
+def format_eta(eta):
+    minutes, seconds = divmod(int(eta), 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 def metrics(event):
     values = []
     if event.percent is not None:
         values.append(f"{event.percent:.0f}%")
     if event.speed is not None:
-        divisor, unit = (1048576, "MiB") if event.speed >= 1048576 else (1024, "KiB")
-        values.append(f"{event.speed / divisor:.1f} {unit}/s")
+        values.append(format_speed(event.speed))
     if event.eta is not None:
-        minutes, seconds = divmod(int(event.eta), 60)
-        values.append(f"ETA {minutes:02d}:{seconds:02d}")
+        values.append(f"ETA {format_eta(event.eta)}")
     return "".join(f" | {value}" for value in values)
 
 

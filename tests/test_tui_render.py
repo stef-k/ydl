@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
+from textual.widgets import RadioButton, TabbedContent, Tabs
+
 from ydl import config, jobs, runner
-from ydl.models import BackendStatus, Event, Settings
-from ydl.tui_dialogs import SettingsPanel
+from ydl.models import BackendStatus, Decision, Event, Settings
+from ydl.tui_dialogs import RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
 
 from tui_pilot import PilotCase
@@ -80,7 +82,7 @@ class RenderTests(PilotCase):
             self.assertNotIn("61%", progress)
 
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
-        async with self.populated_dashboard() as (app, pilot, _, _):
+        async with self.populated_dashboard() as (app, pilot, emit, event):
             queue = app.dashboard.query_one("#queue")
             await pilot.resize_terminal(100, 26)
             await self.wait_for(pilot, lambda: len(queue.columns) == 7)
@@ -105,20 +107,67 @@ class RenderTests(PilotCase):
                 controls = app.dashboard.query_one("#controls")
                 self.assertLessEqual(transfer.region.y - queue.region.bottom, 2)
                 self.assertLessEqual(controls.region.y - transfer.region.bottom, 1)
+            emit(replace(event, position=100, total=120))
+            await pilot.resize_terminal(100, 24)
+            await pilot.pause()
+            row = next(line for line in self.rendered_lines(app) if "Downloading" in line and "61%" in line)
+            self.assertIn("Downloading 100/120", row)
+            await pilot.resize_terminal(150, 38)
+            await pilot.pause()
             settings = app.dashboard.query_one("#settings")
             self.assertLess(settings.region.y, queue.region.y)
             self.assertTrue(await pilot.click("#settings"))
             await self.wait_for(pilot, lambda: isinstance(app.screen, SettingsPanel) and app.screen.ready)
             self.assertGreater(app.screen.query_one(".dialog").size.width, 72)
-            self.assertIn("Backend", "\n".join(self.rendered_lines(app)))
+            tabbed = app.screen.query_one(TabbedContent)
+            rail = tabbed.query_one(Tabs)
+            output = app.screen.query_one("#settings-output")
+            self.assertLessEqual(rail.region.right, output.region.x)
+            rendered = self.rendered_lines(app)
+            self.assertIn("Browse", next(line for line in rendered if "Output directory" in line))
+            self.assertTrue(await pilot.click("#--content-tab-backend-settings"))
+            self.assertEqual(tabbed.active, "backend-settings")
+            rail.focus()
+            await pilot.press("up")
+            self.assertEqual(tabbed.active, "general")
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            self.assertLess(rail.region.y, output.region.y)
+            self.assertLessEqual(output.region.x, rail.region.right)
             await pilot.press("escape")
             self.assertIs(app.focused, settings)
+            await pilot.resize_terminal(150, 38)
+            await pilot.pause()
             action_x = sum(column.width + 2 * queue.cell_padding for column in queue.ordered_columns[:-1]) + 1
             self.assertTrue(await pilot.click("#queue", offset=(action_x, 1)))
             self.assertIsInstance(app.screen, RowMenu)
             self.assertTrue(await pilot.click("#details"))
             await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
             self.assertGreater(app.screen.query_one(".dialog").size.width, 72)
-            self.assertIn("Job Details — Goa Trance Collection", "\n".join(self.rendered_lines(app)))
+            text = self.rendered_lines(app)
+            self.assertIn("Job Details — Goa Trance Collection", "\n".join(text))
+            progress = app.screen.query_one("#details-progress")
+            self.assertLessEqual(app.screen.query_one(Tabs).region.right, progress.region.x)
+            speed = next(line for line in text if "Speed" in line)
+            eta = next(line for line in text if "ETA" in line and "00:17" in line and "Track progress" not in line)
+            self.assertIn("1.9 MiB/s", speed)
+            self.assertNotEqual(speed, eta)
             await pilot.press("escape")
             self.assertIs(app.focused, queue)
+
+    async def test_playlist_choices_render_as_distinct_selectable_rows(self):
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            decision = Decision("Download", (("single", "This video"), ("playlist", "Entire playlist")),
+                                "single", "scope", "ExampleVideo", "ExamplePlaylist")
+            task = app.own(app.decide(decision))
+            await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
+            text = "\n".join(self.rendered_lines(app))
+            self.assertIn("What do you want to download?", text)
+            choices = app.screen.query(RadioButton)
+            self.assertGreater(choices[1].region.y - choices[0].region.y, 1)
+            self.assertTrue(choices[0].value)
+            self.assertTrue(await pilot.click(choices[1]))
+            await pilot.click("#scope-confirm")
+            self.assertEqual(await task, "playlist")

@@ -140,12 +140,18 @@ class Dashboard(Screen):
         self.notice_text = None
 
     def compose(self):
+        brand = Text()
+        brand.append(" ▶ ", "bold white on #2159d8")
+        brand.append("  ydl", "bold #e4efff")
         try:
-            ver = f"  v{version('ydl')}"
+            installed = version("ydl")
         except PackageNotFoundError:
-            ver = ""
+            pass
+        else:
+            brand.append("  ")
+            brand.append(f" v{installed} ", "bold #e4efff on #1d55a0")
         with Horizontal(id="header"):
-            yield Static(f"▶  ydl{ver}", id="brand", markup=False)
+            yield Static(brand, id="brand")
             yield Static("YouTube to MP3", id="tagline", markup=False)
             yield Static("Backend · Check pending", id="backend-status", markup=False)
             yield button("Retry backend", "retry-backend")
@@ -173,7 +179,7 @@ class Dashboard(Screen):
                 yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
                                cursor_foreground_priority="renderable")
             with Vertical(id="transfer-panel", classes="panel"):
-                yield Static("Active transfer", classes="section-title", markup=False)
+                yield Static("Active transfer", id="transfer-title", classes="section-title", markup=False)
                 yield Static("No active transfer", id="transfer")
             with Vertical(id="action-area"):
                 with Horizontal(id="controls"):
@@ -239,6 +245,9 @@ class Dashboard(Screen):
         self.query_one("#queue-summary", Static).update(f"Queue · {len(session.index.rows)} URLs{active} · "
                                                         f"{counts['Pending']} Pending{interrupted} · "
                                                         f"{counts['Complete']} Complete · {counts['Failed']} Failed")
+        plan = session.plans.get(session.active_id)
+        title = f"Active transfer · {clean(plan.title)}" if plan and plan.title else "Active transfer"
+        self.query_one("#transfer-title", Static).update(title)
         bar_width = min(48, max(18, self.size.width // 4))
         self.query_one("#transfer", Static).update(
             transfer_text(event, "Preparing backend…" if session.busy else "", bar_width))
@@ -263,8 +272,8 @@ class Dashboard(Screen):
             extra = width - 100
             progress = extra // 5
             output = extra * 9 // 20
-            return (("#", "position", 3), ("Title", "title", 17 + extra - progress - output),
-                    ("Type", "type", 16), ("Status", "status", 16), ("Track progress", "progress", 14 + progress),
+            return (("#", "position", 3), ("Title", "title", 14 + extra - progress - output),
+                    ("Type", "type", 16), ("Status", "status", 20), ("Track progress", "progress", 14 + progress),
                     ("Output", "output", 14 + output), ("⋮", "actions", 2))
         return (("#", "position", 3), ("Title", "title", max(9, width - 32)),
                 ("Status", "status", 14), ("⋮", "actions", 2))
@@ -274,7 +283,9 @@ class Dashboard(Screen):
         event = session.events.get(row.id) if view.status == "Active" and session.active_id == row.id else None
         status = event_label(event) if view.status == "Active" else view.status
         if event and event.position is not None and self.size.width >= 100:
-            status += f" {event.position}/{event.total}"
+            position_text = f" {event.position}/{event.total}"
+            status_width = next(size for _, key, size in columns if key == "status")
+            status = clip(status, status_width - len(position_text)) + position_text
         title, kind, output = row_metadata(row, view, session.plans.get(row.id))
         percent = 100 if view.status == "Complete" else event.percent if event else None
         values = dict(position=str(position), title=title, type=kind, status=status, output=output,

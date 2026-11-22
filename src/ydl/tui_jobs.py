@@ -3,24 +3,21 @@
 import asyncio
 from pathlib import Path
 
+from rich.table import Table
 from rich.text import Text
 from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Static, TabbedContent, TabPane
 
-from .terminal import clean, clip, display_path
-from .tui_dialogs import Panel
-from .tui_widgets import JobTable, button, job_title, row_metadata, transfer_text
+from .terminal import clean, clean_lines, clip, display_path, format_eta, format_speed
+from .tui_dialogs import DialogTabs, Panel
+from .tui_widgets import JobTable, button, event_label, job_title, progress_bar, row_metadata
 
 DASH = "—"
 ROW_ACTIONS = (("details", "Details"), ("retry-selected", "Retry selected entry"),
                ("up", "Move up"), ("down", "Move down"), ("remove", "Remove selected"),
                ("recheck", "Recheck"))
-
-
-def multiline(value):
-    return "\n".join(clean(line) for line in str(value).splitlines())
 
 
 class RowMenu(Panel):
@@ -188,7 +185,22 @@ def tail_log(path):
         raw = stream.read(limit)
     lines = raw.decode(errors="replace").splitlines()
     omitted = length > limit or len(lines) > 200
-    return ("Older text omitted\n" if omitted else "") + multiline("\n".join(lines[-200:]))
+    return ("Older text omitted\n" if omitted else "") + clean_lines("\n".join(lines[-200:]))
+
+
+def active_progress(event):
+    stage = event_label(event)
+    if not event:
+        return [("Status", stage)]
+    if event.position is not None:
+        stage += f" ({event.position}/{event.total})"
+    progress = Text("◌  Working…", style="#73c7ff")
+    if event.percent is not None:
+        progress = progress_bar(event.percent, 18)
+        progress.append(f" {event.percent:.0f}%")
+    return [("Status", stage), ("Track", event.title or DASH), ("Track progress", progress),
+            ("Speed", format_speed(event.speed) if event.speed is not None else DASH),
+            ("ETA", format_eta(event.eta) if event.eta is not None else DASH)]
 
 
 class Details(Panel):
@@ -203,7 +215,7 @@ class Details(Panel):
         self.has_log = False
 
     def body(self):
-        with TabbedContent(id="details-tabs"):
+        with DialogTabs(id="details-tabs"):
             with TabPane("Progress", id="progress-pane"):
                 yield Static("", id="details-progress")
             with TabPane("Log", id="log-pane"):
@@ -227,6 +239,7 @@ class Details(Panel):
         inspected = view.inspection if entry else session.external.get(row_id)
         job = inspected.job if inspected else None
         plan = session.plans.get(row_id)
+        settings = job.settings if job else plan.settings if plan else None
         title = row_metadata(entry, view, plan)[0] if entry else job_title(job) if job else row_id
         self.query_one(".dialog-title", Static).update(f"Job Details — {clean(title)}")
         status = job_status(session, row_id)
@@ -235,8 +248,9 @@ class Details(Panel):
         retry = self.query_one("#details-retry", Button)
         retry.label = "Retry selected entry" if entry else "Retry selected job"
         retry.disabled = not can_retry(session, row_id)
-        self.query_one("#details-progress", Static).update(self.progress_text(session, status, result, inspected, diagnostic))
-        self.query_one("#details-info", Static).update(self.info_text(entry, inspected, job, plan, diagnostic))
+        progress = self.progress_fields(status, session.events.get(row_id), result, inspected, settings, diagnostic)
+        self.query_one("#details-progress", Static).update(progress)
+        self.query_one("#details-info", Static).update(self.info_text(entry, inspected, job, plan, settings, diagnostic))
         self.query_one("#log-path", Static).update(clean(self.log_path))
         self.query_one("#copy-log", Button).disabled = not self.has_log
         self.query_one("#log-refresh", Button).disabled = self.log_reading
@@ -251,22 +265,33 @@ class Details(Panel):
             return entry.diagnostic
         return "\n".join(result.diagnostics) if result else ""
 
-    def progress_text(self, session, status, result, inspected, diagnostic):
-        text = Text(f"Status  {status}\n", style="bold")
+    @staticmethod
+    def progress_fields(status, event, result, inspected, settings, diagnostic):
+        fields = [("Status", status)]
         if status == "Active":
-            text.append(transfer_text(session.events.get(self.row_id), "Preparing download…"))
+            fields = active_progress(event)
         elif result:
-            text.append(f"Saved  {result.saved}   Failed  {result.failed}\n"
-                        f"Destination  {clean(result.destination or DASH)}")
+            fields.extend((("Saved", str(result.saved)), ("Failed", str(result.failed))))
         elif inspected and inspected.job:
-            text.append(f"Verified  {inspected.verified}/{len(inspected.job.items)}\n"
-                        f"Track progress  {'100%' if status == 'Complete' else DASH}")
+            fields.extend((("Verified", f"{inspected.verified}/{len(inspected.job.items)}"),
+                           ("Track progress", "100%" if status == "Complete" else DASH)))
+        output = ((inspected.output if inspected else None) or (result.destination if result else None)
+                  or (settings.destination if settings else None))
+        if output:
+            fields.append(("Output", display_path(output)))
+        if settings:
+            quality = f"VBR {settings.quality}" if len(settings.quality) == 1 else settings.quality
+            fields.extend((("MP3 quality", quality), ("Keep video", "Yes" if settings.keep_video else "No")))
         if diagnostic:
-            text.append(f"\n\n{multiline(diagnostic)}", "#ffba68")
-        return text
+            fields.append(("Diagnostic", Text(clean_lines(diagnostic), style="#ffba68")))
+        grid = Table.grid(padding=(0, 1), pad_edge=False)
+        grid.add_column(width=14, style="#c6ddff")
+        grid.add_column()
+        for name, value in fields:
+            grid.add_row(name, value if isinstance(value, Text) else Text(clean(value)))
+        return grid
 
-    def info_text(self, entry, inspected, job, plan, diagnostic):
-        settings = job.settings if job else plan.settings if plan else None
+    def info_text(self, entry, inspected, job, plan, settings, diagnostic):
         values = dict.fromkeys(("Reserved queue ID", "Core job ID", "Canonical URL", "Requested scope", "Type",
                                 "Resolved scope", "MP3 quality", "Keep video", "Enqueued base", "Resolved output"))
         values["Diagnostic"] = diagnostic
@@ -284,7 +309,7 @@ class Details(Panel):
         if job and not entry:
             kind = f"Playlist ({len(job.items)})" if job.scope == "playlist" else "Video"
             values.update({"Type": kind, "Enqueued base": job.enqueued_base})
-        return "\n".join(f"{name}  {multiline(value or DASH)}" for name, value in values.items())
+        return "\n".join(f"{name}  {clean_lines(value or DASH)}" for name, value in values.items())
 
     @property
     def log_path(self):

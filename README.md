@@ -104,6 +104,8 @@ entries once in queue order. **Help** lists the keyboard shortcuts.
 Keep the output directory in place during downloads. The queue is stored in
 `$XDG_STATE_HOME/ydl/tui-queue.json` (usually `~/.local/state/ydl/tui-queue.json`).
 If a queue save needs recovery, use **Recover queue** after addressing the error.
+Scroll long notices with the mouse wheel or press Tab to focus the notice and
+use the arrow keys.
 Removing a queue entry preserves its output and saved job files.
 
 ## Download your first MP3

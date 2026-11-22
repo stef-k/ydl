@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, Checkbox, DirectoryTree, Input, Label, RadioButton, RadioSet, Select,
-                             Static, TabbedContent, TabPane, TextArea)
+                             Static, TabbedContent, TabPane, Tabs, TextArea)
 
 from . import config
 from .models import YdlError
@@ -108,10 +108,11 @@ class RunnerPrompt(Panel):
             yield Static(clean(self.decision.question), markup=False)
             return
         yield Static(f"Video ID  {clean(self.decision.video_id or '—')}\n"
-                     f"Playlist ID  {clean(self.decision.playlist_id or '—')}", markup=False)
-        with RadioSet(id="choices"):
+                     f"Playlist ID  {clean(self.decision.playlist_id or '—')}", id="scope-ids", markup=False)
+        yield Label("What do you want to download?", id="scope-question")
+        with RadioSet(id="choices", compact=True):
             for value, label in self.decision.choices:
-                yield RadioButton(label, value=value == self.decision.default)
+                yield RadioButton(label, value=value == self.decision.default, compact=True)
 
     def buttons(self):
         yield button("Cancel", "cancel")
@@ -322,6 +323,20 @@ class Browse(Panel):
         self.dismiss(str(path))
 
 
+class DialogTabs(TabbedContent):
+    def on_key(self, event):
+        if event.key not in ("up", "down") or not self.screen.has_class("-wide"):
+            return
+        tabs = self.query_one(Tabs)
+        if tabs.has_focus:
+            event.stop()
+            event.prevent_default()
+            if event.key == "up":
+                tabs.action_previous_tab()
+            else:
+                tabs.action_next_tab()
+
+
 class SettingsPanel(Panel):
     heading = "Settings"
     initial_focus = "#settings-output"
@@ -333,19 +348,21 @@ class SettingsPanel(Panel):
 
     def body(self):
         prefs = self.prefs
-        with TabbedContent(id="settings-tabs"):
+        with DialogTabs(id="settings-tabs"):
             with TabPane("General", id="general"):
-                yield Label("Output directory")
-                with Horizontal(classes="form-line"):
+                with Horizontal(classes="setting-row"):
+                    yield Label("Output directory", classes="setting-label")
                     yield Input(prefs.output, id="settings-output", compact=True)
                     yield button("Browse", "settings-browse")
-                yield Label("MP3 quality")
-                yield select(quality_options(prefs.quality), prefs.quality, "settings-quality")
+                with Horizontal(classes="setting-row"):
+                    yield Label("MP3 quality", classes="setting-label")
+                    yield select(quality_options(prefs.quality), prefs.quality, "settings-quality")
                 yield Checkbox("Keep original video by default", prefs.keep_video, id="settings-video", compact=True)
             with TabPane("Backend", id="backend-settings"):
                 yield Checkbox("Auto-update backend (yt-dlp)", prefs.auto_update, id="settings-update", compact=True)
-                yield Label("Update channel")
-                yield select([("Nightly", "nightly"), ("Stable", "stable")], prefs.channel, "settings-channel")
+                with Horizontal(classes="setting-row"):
+                    yield Label("Update channel", classes="setting-label")
+                    yield select([("Nightly", "nightly"), ("Stable", "stable")], prefs.channel, "settings-channel")
                 yield Static("", id="settings-backend-status", markup=False)
                 yield button("Retry backend", "settings-retry-backend")
         yield Static("", id="settings-error", markup=False)
