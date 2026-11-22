@@ -22,6 +22,7 @@ TextArea .text-area--selection { background: #245baf; }
 #workspace { height: 1fr; scrollbar-size-vertical: 1; }
 .panel { height: auto; border: solid $ydl-outline; background: $ydl-panel; }
 #form { padding: 0 1; }
+#form .form-line { margin-bottom: 0; }
 .form-line { height: 1; margin-bottom: 1; }
 .form-line .field-label { width: auto; padding: 0 1 0 0; }
 .url-line { height: 3; }
@@ -44,7 +45,7 @@ JobTable > .datatable--header-cursor { background: #1d55a0; }
 #transfer-panel { min-height: 5; }
 #action-area { height: auto; background: $ydl-navy; }
 #controls, #status-line { height: auto; padding: 0 1; }
-#controls { layout: horizontal; overflow-x: auto; scrollbar-size-horizontal: 1; }
+#controls { layout: horizontal; padding: 0; overflow-x: auto; scrollbar-size-horizontal: 1; }
 #controls Button { padding: 0; margin-right: 0; }
 #primary { width: 14; }
 #notice { width: 1fr; height: auto; max-height: 3; color: $ydl-muted; }

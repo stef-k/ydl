@@ -48,6 +48,7 @@ jobs:
           python -m pip install .
           ydl --help
           ydl tui --help
+          python -c "from importlib.util import find_spec; assert find_spec('textual') is None"
           cd tests
           python -m unittest -v test_backend test_cli test_entrypoint
       - name: Test the installed TUI extra

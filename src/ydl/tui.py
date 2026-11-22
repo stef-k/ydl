@@ -7,7 +7,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.widgets import DataTable, Input, Select, TextArea
 
-from . import config
+from . import config, jobs
 from .models import YdlError
 from .runner import DecisionDismissed
 from .terminal import clean
@@ -16,6 +16,9 @@ from .tui_jobs import Details, RecentJobs, RowMenu
 from .tui_queue import QueueFile
 from .tui_session import QueueSession
 from .tui_widgets import Dashboard, JobTable, move_target
+
+MAIN_SHORTCUTS = {"add", "retry_selected", "retry_failed", "details", "settings",
+                  "row_menu", "remove", "clear_complete", "help"}
 
 
 class YdlApp(App[int]):
@@ -162,8 +165,8 @@ class YdlApp(App[int]):
         self.show(Browse(field.value), selected)
 
     def check_action(self, action, parameters):
-        if action in ("stop", "quit"):
-            return True
+        if action not in MAIN_SHORTCUTS:
+            return super().check_action(action, parameters)
         if self.dashboard is None or self.screen is not self.dashboard or isinstance(self.focused, (Input, TextArea)):
             return False
         return action != "row_menu" or isinstance(self.focused, JobTable)
@@ -206,6 +209,7 @@ class YdlApp(App[int]):
         error = self.dashboard.query_one("#form-error")
         try:
             output = config.output_path(field.value)
+            jobs.safe_destination(output)
         except (OSError, YdlError) as exc:
             error.update(clean(exc))
             field.focus()
@@ -266,10 +270,11 @@ class YdlApp(App[int]):
             return True
         if action == "retry-selected":
             return session.media_allowed and session.selected_retry(row_id)
+        inactive = index.view(row_id).status != "Active"
         if action == "recheck":
-            return index.runnable and not session.busy and entry.status != "active"
+            return index.runnable and not session.busy and inactive
         if action == "remove":
-            return index.editable and entry.status != "active" and (not session.busy or self.is_pending(entry))
+            return index.editable and inactive and (not session.busy or self.is_pending(entry))
         direction = -1 if action == "up" else 1
         return index.editable and move_target(index.rows, row_id, direction, self.is_pending) is not None
 

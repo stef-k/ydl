@@ -189,13 +189,14 @@ Job logs are in `~/.local/state/ydl/logs/` by default.
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e '.[tui]'
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-CI runs the tests without downloading from YouTube. See the
-[CLI specification](spec/ydl-cli-spec.md) for the complete behavior and the live
-smoke test, and the [changelog](CHANGELOG.md) for changes.
+CI tests the base and TUI installations separately without downloading from
+YouTube. For the live smoke test and acceptance cases, see the
+[TUI specification](spec/ydl-tui-spec.md). The [CLI specification](spec/ydl-cli-spec.md)
+describes the command-line workflow.
 
 ydl is available under the [MIT License](LICENSE). Third-party tools retain
 their own licenses.

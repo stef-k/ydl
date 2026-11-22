@@ -188,12 +188,15 @@ async def download(request: Download, paths, prefs, *, emit: Emit, decide: Decid
 
 async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backend_ready):
     address = media.parse_url(request.url)
+    destination_option = request.output if request.output is not None else prefs.output
+    if reserved:
+        target = Path(destination_option)
+        base_identity = jobs.safe_destination(target)
     scope = await scope_for(address, request, decide)
     if scope == "playlist" and media.is_mix(address.playlist):
         raise YdlError("Auto-generated YouTube mixes are unsupported. Use --single for an individual video.")
-    destination_option = request.output if request.output is not None else prefs.output
-    target = Path(destination_option) if reserved else output_path(destination_option)
-    base_identity = jobs.safe_destination(target) if reserved else None
+    if not reserved:
+        target = output_path(destination_option)
     quality = quality_value(request.quality if request.quality is not None else prefs.quality)
     log = Log(paths.state / "logs" / f"{job_id}.log")
     deps = await prepare(paths, prefs, decide, emit, log, no_update=request.no_update, backend_ready=backend_ready)

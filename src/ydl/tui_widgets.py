@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, Select, Static, TextArea
 
 from . import media
-from .terminal import clean, clip, display_path, metrics
+from .terminal import clean, clip, metrics
 
 SCOPE_CHOICES = [("Auto", "auto"), ("Single video", "single"), ("Entire playlist", "playlist")]
 STAGES = {"checking": "Checking", "updating": "Updating", "metadata": "Fetching metadata",
@@ -59,11 +59,14 @@ def row_metadata(entry, view, plan):
     if job:
         title = Path(job.destination).name if job.scope == "playlist" else job.items[0].title
         kind = f"Playlist ({len(job.items)})" if job.scope == "playlist" else "Video"
-        return title, kind, display_path(observed.output) if observed.output else "—"
+        output = observed.output.name if observed.output else "—"
+        if job.scope == "playlist" and observed.output:
+            output += "/"
+        return title, kind, output
     if plan and plan.settings:
         settings = plan.settings
         kind = f"Playlist ({plan.total})" if settings.scope == "playlist" else "Video"
-        return plan.title, kind, display_path(settings.destination) if settings.scope == "playlist" else "—"
+        return plan.title, kind, f"{settings.destination.name}/" if settings.scope == "playlist" else "—"
     address = media.parse_url(entry.url)
     if entry.scope == "playlist" or not address.video:
         return f"Playlist {address.playlist}", "Playlist", "—"
@@ -140,7 +143,7 @@ class Dashboard(Screen):
             with Vertical(id="form", classes="panel"):
                 with Horizontal(classes="form-line url-line"):
                     yield TextArea(self.app.prefill or "", id="draft", compact=True,
-                                   placeholder="Paste YouTube URLs · one per line", soft_wrap=False)
+                                   placeholder="Paste YouTube URLs · one per line", soft_wrap=False, tab_behavior="focus")
                     yield button("＋ Add to Queue", "add-urls", "primary")
                 with Horizontal(classes="form-line"):
                     yield label("Scope", "field-label")
@@ -210,7 +213,9 @@ class Dashboard(Screen):
         recover.disabled = not session.can_recover
 
     def update_status(self, session):
-        self.query_one("#backend-status", Static).update(format_backend(session.backend.status))
+        backend = session.backend.status
+        color = "#ff7c85" if backend.state == "Unavailable" else "#a6daae" if backend.version else "#c6ddff"
+        self.query_one("#backend-status", Static).update(Text(format_backend(backend), style=color))
         notice = session.index.error or session.backend.config_error or session.index.notice or session.notice
         self.query_one("#notice", Static).update(clean(notice or session.backend.status.detail or
                                                        "Tab navigate · Enter select · Ctrl+C stop · Ctrl+Q quit"))

@@ -1,14 +1,18 @@
 """Exercise terminal interactions through the installed Textual frontend."""
 
 import asyncio
+import hashlib
 import tempfile
+import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from textual.events import MouseScrollDown
 from textual.widgets import Button, Input, RadioSet, Select, TabbedContent, TextArea
 
-from ydl import backend, config, jobs, runner
+from ydl import backend, config, jobs, media, runner
 from ydl.models import Decision, Event, Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
@@ -58,6 +62,10 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.focused.id, "draft")
             self.assertEqual(app.focused.text, draft)
             self.assertEqual(app.session.index.rows, [])
+            await pilot.press("tab")
+            self.assertEqual(app.focused.id, "add-urls")
+            await pilot.press("shift+tab")
+            self.assertEqual(app.focused.id, "draft")
             await self.submit(pilot)
             await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm))
             self.assertEqual(app.focused.id, "cancel")
@@ -171,6 +179,9 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, RowMenu)
             await pilot.click("#down")
             await self.wait_for(pilot, lambda: self.disk.read()[1].id == entries[0].id)
+            self.assertEqual(app.selected, entries[0].id)
+            await pilot._post_mouse_events([MouseScrollDown], queue, offset=(5, 2))
+            await self.wait_for(pilot, lambda: queue.scroll_y > 0)
             self.assertEqual(app.selected, entries[0].id)
             await pilot.resize_terminal(112, 26)
             await self.wait_for(pilot, lambda: len(queue.columns) == 7)
@@ -324,8 +335,6 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
         await self.check_runner_prompt_recovery(answer="y", expected="failed")
 
     async def check_runner_prompt_recovery(self, *, answer, expected):
-        import threading
-
         original_row, following = [self.entry(name) for name in "AB"]
         self.disk.save([original_row, following])
         before_prompt = asyncio.Event()
@@ -380,3 +389,80 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
                     await self.wait_for(pilot, lambda: app.session.index.editable and app.recovery_draft is None)
                     self.assertEqual([row.status for row in self.disk.read()], [expected, "pending", "pending"])
                     self.assertFalse(app.session.busy)
+
+    async def test_entire_playlist_invokes_core_size_confirmation_after_scope_choice(self):
+        row = self.entry("A&list=LargePlaylist")
+        self.disk.save([row])
+        app = self.app()
+        deps = runner.Dependencies([], "offline-ffmpeg", "offline-ffprobe")
+        metadata = {"playlist_count": 60, "entries": [{"id": "A", "title": "Track A"}]}
+        with patch.object(runner, "prepare", return_value=deps):
+            with patch.object(media, "metadata", return_value=metadata) as lookup:
+                async with app.run_test(size=(80, 24)) as pilot:
+                    await self.ready(pilot, app)
+                    await pilot.click("#primary")
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
+                    lookup.assert_not_called()
+                    await pilot.press("down", "space")
+                    self.assertEqual(app.screen.query_one(RadioSet).pressed_index, 1)
+                    await pilot.click("#scope-confirm")
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt)
+                                        and app.screen.ready and not app.screen.scope)
+                    self.assertIn("60 entries", app.screen.decision.question)
+                    self.assertEqual(app.focused.id, "choice-1")
+                    await pilot.press("enter")
+                    await self.wait_for(pilot, lambda: not app.session.busy)
+                    lookup.assert_awaited_once()
+                    self.assertTrue(lookup.call_args.kwargs["playlist"])
+                    self.assertEqual(self.disk.read()[0].diagnostic, "Playlist download declined")
+                    self.assertFalse(app.session.store.path(row.id).exists())
+
+    async def test_clear_completed_and_remove_do_not_touch_job_files(self):
+        finished, stale = self.entry("saved"), self.entry("lost")
+        stale = replace(stale, status="active")
+        store = jobs.JobStore(self.paths.state)
+        item = jobs.make_item(1, "saved", "Saved song", False)
+        published = self.output / (item.stem + ".mp3")
+        published.write_bytes(b"saved MP3")
+        item.outputs["mp3"] = {"name": published.name, "sha256": hashlib.sha256(published.read_bytes()).hexdigest()}
+        plan = jobs.Job.create(finished.id, Settings("single", "0", False, self.output), [item])
+        with store.claim(finished.id, new=True):
+            store.save(plan)
+        store.logs.mkdir()
+        log = store.logs / f"{plan.id}.log"
+        log.write_text("Kept log")
+        self.disk.save([finished, stale])
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            self.assertEqual(app.session.index.view(stale.id).status, "Needs attention")
+            self.assertTrue(app.can_row("recheck", stale.id))
+            await pilot.click("#clear-completed")
+            await pilot.press("enter")
+            self.assertEqual(len(self.disk.read()), 2)
+            await pilot.click("#clear-completed")
+            await pilot.click("#confirm")
+            await self.wait_for(pilot, lambda: len(app.session.index.rows) == 1)
+            self.assertEqual(app.selected, stale.id)
+            await pilot.press("delete")
+            await pilot.click("#confirm")
+            await self.wait_for(pilot, lambda: not app.session.index.rows)
+        self.assertTrue(store.path(plan.id).exists())
+        self.assertEqual(published.read_bytes(), b"saved MP3")
+        self.assertEqual(log.read_text(), "Kept log")
+
+    async def test_selected_retry_and_shift_r_use_the_same_failed_row_gates(self):
+        first, second = [replace(self.entry(name), status="failed_before_plan") for name in "AB"]
+        self.disk.save([first, second])
+        app = self.app()
+        with patch.object(runner, "download", side_effect=YdlError("Offline fixture failure")) as attempt:
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                app.dashboard.query_one("#queue").focus()
+                await pilot.press("down", "r")
+                await self.wait_for(pilot, lambda: attempt.await_count == 1 and not app.session.busy)
+                self.assertEqual(attempt.await_args.kwargs["job_id"], second.id)
+                await pilot.press("R")
+                await self.wait_for(pilot, lambda: attempt.await_count == 3 and not app.session.busy)
+                self.assertEqual([call.kwargs["job_id"] for call in attempt.await_args_list],
+                                 [second.id, first.id, second.id])

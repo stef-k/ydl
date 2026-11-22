@@ -405,3 +405,68 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         target.rename(target.with_suffix(".original"))
         await session.index.recheck(claimed.id)
         self.assertEqual(session.index.view(claimed.id).status, "Failed")
+
+    async def test_preplan_failure_retries_original_id_and_options(self):
+        row = replace(self.entry("A", keep_video=True), quality="256K", scope="single")
+        session = await self.start(row)
+        failure = YdlError("YouTube did not provide a usable requested format.")
+        with patch.object(runner, "download", side_effect=[failure, Result(saved=1)]) as download:
+            await self.run_queue(session, "start")
+            self.assertEqual(self.disk.read()[0].status, "failed_before_plan")
+            self.assertIn(str(failure), self.disk.read()[0].diagnostic)
+            session.arm("selected", row.id)
+            await session.serial
+        self.assertEqual([call.kwargs["job_id"] for call in download.await_args_list], [row.id, row.id])
+        settings = download.await_args.args[0]
+        self.assertEqual((settings.scope, settings.quality, settings.keep_video, settings.output),
+                         ("single", "256K", True, row.output))
+
+    async def test_pending_edits_committed_during_backend_wait_control_dispatch_order(self):
+        first, second, third = [self.entry(name) for name in "ABC"]
+        release = asyncio.Event()
+
+        async def ensure(*_args, **_kwargs):
+            await release.wait()
+
+        self.backend.side_effect = ensure
+        session = await self.start(first, second, third)
+        with patch.object(runner, "download", return_value=Result(saved=1)) as download:
+            session.arm("start")
+            try:
+                self.assertTrue(await session.index.edit(lambda rows: rows[1:]))
+                self.assertTrue(await session.index.edit(lambda rows: rows[::-1]))
+                self.assertEqual(self.disk.read(), [third, second])
+            finally:
+                release.set()
+            await session.serial
+        self.assertEqual([call.kwargs["job_id"] for call in download.await_args_list], [third.id, second.id])
+
+    async def test_stop_with_failed_interruption_save_buffers_pending_and_pauses_launch(self):
+        first, later = [self.entry(name) for name in "AB"]
+        session = await self.start(first, later)
+        downloading = asyncio.Event()
+        save = self.disk.save
+
+        def fail_interrupt(rows):
+            if rows[0].status == "pending":
+                raise OSError("Cannot save interrupted attempt")
+            save(rows)
+
+        async def wait_for_stop(*_args, **_kwargs):
+            downloading.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                raise runner.AttemptStopped(planned=False) from None
+
+        with patch.object(runner, "download", side_effect=wait_for_stop) as download:
+            with patch.object(self.disk, "save", side_effect=fail_interrupt):
+                session.arm("start")
+                await downloading.wait()
+                await session.stop()
+            download.assert_awaited_once()
+        self.assertIn("Cannot save interrupted attempt", session.index.error)
+        self.assertEqual(session.index.buffer[first.id].status, "pending")
+        self.assertTrue(await session.recover())
+        self.assertEqual([row.status for row in self.disk.read()], ["pending", "pending"])
+        self.assertFalse(session.busy)

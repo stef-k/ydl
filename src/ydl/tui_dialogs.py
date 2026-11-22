@@ -147,7 +147,7 @@ class AddURLs(Panel):
         yield Static(f"{scope.capitalize()} · MP3 {quality} · Keep video {'on' if keep_video else 'off'}\n"
                      f"Save to {clean(output)}", markup=False)
         yield TextArea(self.original, id="batch-draft", placeholder="Paste YouTube URLs · one per line",
-                       compact=True, soft_wrap=False)
+                       compact=True, soft_wrap=False, tab_behavior="focus")
         yield Static("", id="add-error", markup=False)
         yield Static("", id="add-storage", markup=False)
 

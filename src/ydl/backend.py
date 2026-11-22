@@ -152,6 +152,8 @@ async def ensure_backend(path, prefs, *, no_update=False, explicit=False, check=
     if installed and not (prefs.auto_update or explicit):
         backend_status(emit, "Ready · updates off", installed)
         return None
+    if installed:
+        backend_status(emit, "Checking", installed)
     try:
         async with asyncio.timeout(UPDATE_TIMEOUT):
             if check:

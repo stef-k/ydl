@@ -47,8 +47,8 @@ class TerminalProcess:
             raise AssertionError(self.output.decode(errors="replace")[-1000:])
 
     def click_primary(self):
-        # The first footer button occupies column 3, row 22 at 80×24.
-        os.write(self.descriptor, b"\x1b[<0;3;22M\x1b[<0;3;22m")
+        # The first footer button occupies column 3, row 23 at 80×24.
+        os.write(self.descriptor, b"\x1b[<0;3;23M\x1b[<0;3;23m")
 
 
 def until(condition, pump=lambda: time.sleep(0.02), *, timeout=8):
