@@ -53,16 +53,19 @@ def move_target(rows, row_id, direction, eligible):
     return next(((row, i) for i in range(row + direction, stop, direction) if eligible(rows[i])), None)
 
 
+def job_title(job):
+    return Path(job.destination).name if job.scope == "playlist" else job.items[0].title
+
+
 def row_metadata(entry, view, plan):
     observed = view.inspection
     job = observed.job if observed else None
     if job:
-        title = Path(job.destination).name if job.scope == "playlist" else job.items[0].title
         kind = f"Playlist ({len(job.items)})" if job.scope == "playlist" else "Video"
         output = observed.output.name if observed.output else "—"
         if job.scope == "playlist" and observed.output:
             output += "/"
-        return title, kind, output
+        return job_title(job), kind, output
     if plan and plan.settings:
         settings = plan.settings
         kind = f"Playlist ({plan.total})" if settings.scope == "playlist" else "Video"
@@ -79,21 +82,24 @@ def event_label(event):
     return STAGES.get(event.stage, event.stage.capitalize()) if event else "Checking"
 
 
-def transfer_text(event, phase):
+def progress_bar(percent, width):
+    full = max(0, min(width, int(percent * width / 100)))
+    bar = Text("━" * full, style="#49e18b")
+    bar.append("─" * (width - full), "#7293b6")
+    return bar
+
+
+def transfer_text(event, phase, bar_width=18):
     if event is None:
         return Text(phase or "No active transfer", style="#a6badc")
     title = clean(event.title or event.message or "—")
     position = f" · Playlist {event.position}/{event.total}" if event.position is not None else ""
-    bar = Text(f"{event_label(event)} · {title}{position}\nTrack progress ")
+    bar = Text(f"{event_label(event)}{position} · {title}\nTrack progress ")
     if event.percent is None:
         bar.append("◌  Working…", "#73c7ff")
     else:
-        full = min(18, int(event.percent * 18 / 100))
-        bar.append("━" * full, "#49e18b")
-        bar.append("━" * (18 - full), "#294561")
-        bar.append(metrics(event))
-    if event.percent is None:
-        bar.append(metrics(event))
+        bar.append(progress_bar(event.percent, bar_width))
+    bar.append(metrics(event))
     return bar
 
 
@@ -124,10 +130,11 @@ class JobTable(DataTable):
 
 
 class Dashboard(Screen):
+    VERTICAL_BREAKPOINTS = [(35, "-tall")]
+
     def __init__(self):
         super().__init__()
         self.rendered = ()
-        self.compact_layout = None
         self.table_columns = ()
         self.position = 0
 
@@ -138,43 +145,46 @@ class Dashboard(Screen):
             ver = ""
         with Horizontal(id="header"):
             yield Static(f"▶  ydl{ver}", id="brand", markup=False)
+            yield Static("YouTube to MP3", id="tagline", markup=False)
             yield Static("Backend · Check pending", id="backend-status", markup=False)
             yield button("Retry backend", "retry-backend")
+            yield button("⚙ Settings", "settings")
         with VerticalScroll(id="workspace"):
             with Vertical(id="form", classes="panel"):
                 with Horizontal(classes="form-line url-line"):
                     yield TextArea(self.app.prefill or "", id="draft", compact=True,
                                    placeholder="Paste YouTube URLs · one per line", soft_wrap=False, tab_behavior="focus")
                     yield button("＋ Add to Queue", "add-urls", "primary")
-                with Horizontal(classes="form-line"):
-                    yield label("Scope", "field-label")
-                    yield select(SCOPE_CHOICES, "auto", "scope")
-                    yield label("MP3 quality", "field-label")
-                    yield select(quality_options("0"), "0", "quality")
-                    yield Checkbox("Keep video", id="retain", compact=True)
-                with Horizontal(classes="form-line"):
-                    yield label("Save to", "field-label")
-                    yield Input(id="destination", compact=True)
-                    yield button("Browse", "browse")
+                with Vertical(id="form-options"):
+                    with Horizontal(id="media-options", classes="form-line"):
+                        yield label("Scope", "field-label")
+                        yield select(SCOPE_CHOICES, "auto", "scope")
+                        yield label("MP3 quality", "field-label")
+                        yield select(quality_options("0"), "0", "quality")
+                        yield Checkbox("Keep video", id="retain", compact=True)
+                    with Horizontal(classes="form-line"):
+                        yield label("Save to", "field-label")
+                        yield Input(id="destination", compact=True)
+                        yield button("Browse", "browse")
                 yield Static("", id="form-error", markup=False)
             with Vertical(id="queue-panel", classes="panel"):
                 yield Static("Queue · 0 URLs", id="queue-summary", markup=False)
-                yield JobTable(id="queue", cursor_type="row", show_row_labels=False)
+                yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
+                               cursor_foreground_priority="renderable")
             with Vertical(id="transfer-panel", classes="panel"):
                 yield Static("Active transfer", classes="section-title", markup=False)
                 yield Static("No active transfer", id="transfer")
-        with Vertical(id="action-area"):
-            with Horizontal(id="controls"):
-                yield button("Start queue", "primary", "primary")
-                yield button("Retry failed", "retry-failed")
-                yield button("Clear completed", "clear-completed")
-                yield button("Settings", "settings")
-                yield button("Recent jobs", "recent")
-                yield button("Help", "help")
-                yield button("Quit", "quit")
-            with Horizontal(id="status-line"):
-                yield Static("", id="notice", markup=False)
-                yield button("Recover queue", "recover", "warning")
+            with Vertical(id="action-area"):
+                with Horizontal(id="controls"):
+                    yield button("Start queue", "primary", "primary")
+                    yield button("Retry failed", "retry-failed")
+                    yield button("Clear completed", "clear-completed")
+                    yield button("Recent jobs", "recent")
+                    yield button("Help", "help")
+                    yield button("Quit", "quit")
+                with Horizontal(id="status-line"):
+                    yield Static("", id="notice", markup=False)
+                    yield button("Recover queue", "recover", "warning")
 
     def on_mount(self):
         self.app.call_after_refresh(self.app.startup, self)
@@ -229,25 +239,32 @@ class Dashboard(Screen):
         self.query_one("#queue-summary", Static).update(f"Queue · {len(session.index.rows)} URLs{active} · "
                                                         f"{counts['Pending']} Pending{interrupted} · "
                                                         f"{counts['Complete']} Complete · {counts['Failed']} Failed")
-        self.query_one("#transfer", Static).update(transfer_text(event, "Preparing backend…" if session.busy else ""))
+        bar_width = min(48, max(18, self.size.width // 4))
+        self.query_one("#transfer", Static).update(
+            transfer_text(event, "Preparing backend…" if session.busy else "", bar_width))
 
     def columns(self, width):
         if width >= 100:
-            return (("#", "position", 3), ("Title", "title", max(17, width - 83)),
-                    ("Type", "type", 16), ("Status", "status", 16), ("Track progress", "progress", 14),
-                    ("Output", "output", 15), ("⋮", "actions", 2))
+            extra = width - 100
+            progress = extra // 5
+            output = extra * 9 // 20
+            return (("#", "position", 3), ("Title", "title", 17 + extra - progress - output),
+                    ("Type", "type", 16), ("Status", "status", 16), ("Track progress", "progress", 14 + progress),
+                    ("Output", "output", 14 + output), ("⋮", "actions", 2))
         return (("#", "position", 3), ("Title", "title", max(9, width - 32)),
                 ("Status", "status", 14), ("⋮", "actions", 2))
 
     def row_cells(self, session, row, position, columns):
         view = session.index.view(row.id)
-        event = session.events.get(row.id) if session.active_id == row.id else None
+        event = session.events.get(row.id) if view.status == "Active" and session.active_id == row.id else None
         status = event_label(event) if view.status == "Active" else view.status
+        if event and event.position is not None and self.size.width >= 100:
+            status += f" {event.position}/{event.total}"
         title, kind, output = row_metadata(row, view, session.plans.get(row.id))
-        progress = f"{event.percent:.0f}%" if event and event.percent is not None else "◌" if event else "—"
+        percent = 100 if view.status == "Complete" else event.percent if event else None
         values = dict(position=str(position), title=title, type=kind, status=status, output=output,
-                      progress="100%" if view.status == "Complete" else progress, actions="⋮")
-        return tuple(clip(clean(values[key]), size) for _, key, size in columns)
+                      progress="◌" if view.status == "Active" else "—", actions="⋮")
+        return tuple(self.cell(key, values[key], size, percent) for _, key, size in columns)
 
     def draw_table(self, session, selected):
         table = self.query_one("#queue", JobTable)
@@ -270,7 +287,7 @@ class Dashboard(Screen):
         for title, key, size in columns:
             table.add_column(title, width=size, key=key)
         for row_id, values in cells:
-            table.add_row(*(self.cell(key, value) for (_, key, _), value in zip(columns, values)), key=row_id)
+            table.add_row(*values, key=row_id)
         self.position = next((i for i, (row_id, _) in enumerate(cells) if row_id == selected), 0)
         if cells:
             table.move_cursor(row=self.position, scroll=False)
@@ -278,11 +295,15 @@ class Dashboard(Screen):
 
     def update_cells(self, table, row_id, columns, values):
         for (_, key, _), value in zip(columns, values):
-            table.update_cell(row_id, key, self.cell(key, value))
+            table.update_cell(row_id, key, value)
 
     @staticmethod
-    def cell(key, value):
+    def cell(key, value, size, percent):
+        if key == "progress" and percent is not None:
+            bar = progress_bar(percent, size - 5)
+            bar.append(f" {percent:>3.0f}%")
+            return bar
         style = STATUS_COLORS.get(value, "") if key == "status" else ""
         if key == "actions":
             style = "bold #86cbff"
-        return Text(value, style=style, no_wrap=True)
+        return Text(clip(clean(value), size), style=style, no_wrap=True)

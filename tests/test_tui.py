@@ -2,58 +2,22 @@
 
 import asyncio
 import hashlib
-import tempfile
 import threading
-import unittest
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from textual.events import MouseScrollDown
 from textual.widgets import Button, Input, RadioSet, Select, TabbedContent, TextArea
 
-from ydl import backend, config, jobs, media, runner
+from ydl import config, jobs, media, runner
 from ydl.models import Decision, Event, Result, Settings, YdlError
-from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RecentJobs, RowMenu
-from ydl.tui_queue import Entry, QueueFile
 
-URL = "https://www.youtube.com/watch?v="
+from tui_pilot import PilotCase, URL
 
 
-class PilotTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        self.paths = config.Paths(self.root / "config.toml", self.root / "data", self.root / "state")
-        self.disk = QueueFile(self.paths.state)
-        self.output = self.root / "output"
-        self.output.mkdir()
-        self.backends = self.enterContext(patch.object(backend, "ensure_backend", return_value=None))
-        self.versions = self.enterContext(patch.object(backend, "backend_version", return_value="2026.01.01"))
-
-    def entry(self, name, **overrides):
-        values = dict(scope="auto", quality="0", keep_video=False, output=self.output)
-        return Entry.from_url(URL + name, **{**values, **overrides})
-
-    def app(self, prefill=None):
-        return YdlApp(self.paths, prefill, self.disk)
-
-    async def wait_for(self, pilot, predicate):
-        async with asyncio.timeout(5):
-            while not predicate():
-                await pilot.pause(0.02)
-
-    async def ready(self, pilot, app):
-        await self.wait_for(pilot, lambda: app.session.index.runnable)
-
-    async def submit(self, pilot):
-        self.assertTrue(await pilot.click("#add-urls"))
-        self.assertIsInstance(pilot.app.screen, AddURLs)
-        self.assertTrue(await pilot.click("#submit-add"))
-
+class PilotTests(PilotCase):
     async def test_prefill_batch_validation_and_restore(self):
         draft = "https://youtu.be/A?t=2\n\nnot-a-url\nhttps://www.youtube.com/watch?v=A\nhttps://youtu.be/B"
         app = self.app(draft)
@@ -154,7 +118,7 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([row.status for row in self.disk.read()], ["cancelled", "complete"])
 
     async def test_menu_columns_details_and_focus(self):
-        entries = [self.entry(f"LongTitle{i}") for i in range(12)]
+        entries = [self.entry(f"LongTitle{i}") for i in range(25)]
         self.disk.save(entries)
         app = self.app()
         async with app.run_test(size=(80, 24)) as pilot:
@@ -193,6 +157,16 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, HelpPanel)
             await pilot.press("escape")
             self.assertEqual(app.focused.id, "help")
+            await pilot.resize_terminal(150, 38)
+            await pilot.pause()
+            queue.focus()
+            await pilot.press("ctrl+end")
+            await self.wait_for(pilot, lambda: app.selected == entries[-1].id and queue.scroll_y > 0)
+            await pilot.press("f2")
+            self.assertIsInstance(app.screen, RowMenu)
+            self.assertEqual(app.screen.row_id, entries[-1].id)
+            await pilot.press("escape")
+            self.assertIs(app.focused, queue)
 
     async def test_settings_browse_and_repair_keep_draft_and_scope(self):
         self.paths.config.write_text("[[broken")
@@ -337,6 +311,72 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_save_uncertainty_buffers_confirmed_media_result(self):
         await self.check_runner_prompt_recovery(answer="y", expected="failed")
+
+    async def test_successful_add_settles_under_runner_prompt(self):
+        for rejected in ("", "not-a-url"):
+            with self.subTest(rejected=rejected):
+                await self.check_successful_add_under_prompt(rejected)
+
+    async def check_successful_add_under_prompt(self, rejected):
+        original = self.entry("A")
+        self.disk.save([original])
+        draft = "\n".join(filter(None, (URL + "New", rejected)))
+        app = self.app(draft)
+        before_prompt, pending_add = asyncio.Event(), asyncio.Event()
+        finish_add = threading.Event()
+        sync = config.sync_directories
+        loop = asyncio.get_running_loop()
+        answers = []
+
+        def hold_sync(path):
+            if path == self.paths.state and not finish_add.is_set() and self.disk.path.read_bytes().count(b'"id"') == 2:
+                loop.call_soon_threadsafe(pending_add.set)
+                if not finish_add.wait(5):
+                    raise RuntimeError("Test did not release the Add save")
+            sync(path)
+
+        async def download(*_args, job_id, decide, **_kwargs):
+            if job_id == original.id:
+                await before_prompt.wait()
+                answers.append(await decide(Decision("Download the entire playlist (52 entries)?",
+                                                     (("y", "Yes"), ("n", "No")), "n")))
+                return Result(declined=True)
+            return Result(saved=1)
+
+        with patch.object(runner, "download", side_effect=download), patch.object(config, "sync_directories", hold_sync):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                await pilot.click("#primary")
+                await self.wait_for(pilot, lambda: app.session.active_id == original.id)
+                await self.submit(pilot)
+                add = app.screen
+                try:
+                    await self.wait_for(pilot, pending_add.is_set)
+                    before_prompt.set()
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt)
+                                        and getattr(app.screen, "ready", False))
+                    prompt = app.screen
+                finally:
+                    finish_add.set()
+                try:
+                    await self.wait_for(pilot, lambda: not add.saving)
+                    self.assertIs(app.screen, prompt)
+                    self.assertEqual(app.focused.id, "choice-1")
+                    self.assertTrue(await pilot.click("#choice-1"))
+                    await self.wait_for(pilot, lambda: not app.session.busy)
+                    self.assertEqual(answers, ["n"])
+                    self.assertEqual([row.url for row in self.disk.read()], [original.url, URL + "New"])
+                    if rejected:
+                        self.assertIs(app.screen, add)
+                        self.assertEqual(app.focused.id, "batch-draft")
+                        self.assertEqual(app.focused.text, rejected)
+                        self.assertIn("Line 2", str(add.query_one("#add-error").render()))
+                        await pilot.press("escape")
+                    self.assertIs(app.screen, app.dashboard)
+                    self.assertEqual(app.dashboard.query_one("#draft", TextArea).text, rejected)
+                    self.assertEqual(app.focused.id, "add-urls")
+                finally:
+                    await app.session.stop()
 
     async def check_runner_prompt_recovery(self, *, answer, expected):
         original_row, following = [self.entry(name) for name in "AB"]

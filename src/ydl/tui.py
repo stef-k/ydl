@@ -25,6 +25,7 @@ class YdlApp(App[int]):
     CSS_PATH = "tui.tcss"
     TITLE = "ydl"
     ENABLE_COMMAND_PALETTE = False
+    HORIZONTAL_BREAKPOINTS = [(100, "-wide")]
     BINDINGS = [
         Binding("a", "add", show=False), Binding("r", "retry_selected", show=False),
         Binding("R", "retry_failed", show=False), Binding("d", "details", show=False),
@@ -46,7 +47,7 @@ class YdlApp(App[int]):
         self.quit_dialog = None
         self.quit_answered = asyncio.Event()
         self.recovery_draft = None
-        self.deferred_close = set()
+        self.deferred_close = {}
         self.last_stage = None
         self.progress_timer = None
         self.session = QueueSession(paths, disk or QueueFile(paths.state), self.changed, self.decide)
@@ -97,8 +98,7 @@ class YdlApp(App[int]):
             if getattr(screen, "ready", False):
                 screen.sync()
         if self.screen in self.deferred_close:
-            self.deferred_close.remove(self.screen)
-            self.screen.dismiss()
+            self.screen.dismiss(self.deferred_close.pop(self.screen))
 
     def refresh_dashboard(self):
         rows = self.session.index.rows
@@ -115,6 +115,7 @@ class YdlApp(App[int]):
         opener = opener or origin.focused
 
         def restore(value):
+            self.deferred_close.pop(screen, None)
             if self.screen is origin and opener is not None and opener.is_mounted and not opener.disabled:
                 origin.set_focus(opener)
             elif self.screen is self.dashboard and not self.session.closing:
@@ -139,11 +140,12 @@ class YdlApp(App[int]):
         finally:
             self.waits.discard(future)
 
-    def close_when_current(self, screen):
-        if self.screen is screen:
-            screen.dismiss()
-        elif screen in self.screen_stack:
-            self.deferred_close.add(screen)
+    def close_when_current(self, screen, result=None):
+        stack = self.screen_stack
+        if stack and stack[-1] is screen:
+            screen.dismiss(self.deferred_close.pop(screen, result))
+        elif screen in stack:
+            self.deferred_close[screen] = result
 
     async def decide(self, decision):
         if self.quit_dialog is not None:
@@ -240,13 +242,13 @@ class YdlApp(App[int]):
         self.session.arm("failed")
 
     def action_settings(self):
-        self.own(self.open_settings())
+        self.own(self.open_settings(self.focused))
 
-    async def open_settings(self):
+    async def open_settings(self, opener):
         if not self.session.backend.config_error:
             await self.session.backend.read()
         if self.screen is self.dashboard and not self.session.closing:
-            self.show(SettingsPanel(self.session.backend.prefs))
+            self.show(SettingsPanel(self.session.backend.prefs), opener=opener)
 
     def action_help(self):
         self.show(HelpPanel())

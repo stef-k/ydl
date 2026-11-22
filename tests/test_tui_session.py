@@ -165,6 +165,72 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(session.backend.config_error)
             self.assertFalse(session.busy)
 
+    async def test_invalid_preferences_at_dispatch_leave_pending_untouched(self):
+        row = self.entry("A")
+        session = await self.start(row)
+        await self.wait(lambda: session.backend.check is None)
+
+        with patch.object(self.disk, "save") as save, patch.object(runner, "download") as download:
+            serial = await self.change_config_at_dispatch(session, lambda: self.paths.config.write_text("[[invalid"))
+            await asyncio.wait_for(serial, 4)
+            save.assert_not_called()
+            download.assert_not_called()
+        self.assertFalse(session.armed)
+        self.assertEqual(self.disk.read(), [row])
+        self.assertIn(str(self.paths.config), session.backend.config_error)
+        with self.assertRaises(YdlError) as invalid:
+            config.load(self.paths.config)
+        self.assertIn(str(invalid.exception), session.backend.config_error)
+
+    async def test_changed_channel_at_dispatch_waits_for_new_readiness(self):
+        row = self.entry("A")
+        session = await self.start(row)
+        await self.wait(lambda: session.backend.check is None)
+        ready = asyncio.Event()
+        changed = replace(self.prefs, channel="stable")
+
+        async def ensure(_path, prefs, **_kwargs):
+            self.assertEqual(prefs, changed)
+            self.assertFalse(session.index.lock.locked())
+            await ready.wait()
+
+        self.backend.side_effect = ensure
+        with patch.object(self.disk, "save", wraps=self.disk.save) as save:
+            with patch.object(runner, "download", return_value=Result(saved=1)) as download:
+                serial = await self.change_config_at_dispatch(
+                    session, lambda: config.save(self.paths.config, asdict(changed)))
+                try:
+                    await self.wait(lambda: self.backend.await_count == 2 or not session.busy)
+                    self.assertEqual(self.backend.await_count, 2)
+                    self.assertIsNotNone(session.backend.check)
+                    save.assert_not_called()
+                    download.assert_not_called()
+                    self.assertEqual(self.disk.read(), [row])
+                finally:
+                    ready.set()
+                await asyncio.wait_for(serial, 4)
+                download.assert_awaited_once()
+                self.assertEqual(download.await_args.args[2], changed)
+        self.assertEqual(self.backend.await_count, 2)
+        self.assertEqual([call.args[0][0].status for call in save.call_args_list], ["active", "complete"])
+
+    async def change_config_at_dispatch(self, session, write):
+        waiting = asyncio.Event()
+        lock = session.index.lock
+        acquire = lock.acquire
+
+        async def at_dispatch():
+            waiting.set()
+            return await acquire()
+
+        async with lock:
+            with patch.object(lock, "acquire", at_dispatch):
+                session.arm("start")
+                serial = session.serial
+                await asyncio.wait_for(waiting.wait(), 4)
+                write()
+        return serial
+
     async def test_verification_holds_lock_and_gates_failed_snapshot(self):
         first, second = [self.entry(name, status="failed") for name in "AB"]
         first_plan = self.plan(first, "A")

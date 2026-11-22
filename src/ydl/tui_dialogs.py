@@ -22,6 +22,7 @@ class Panel(ModalScreen):
     heading = ""
     initial_focus = "#cancel"
     global_controls = True
+    ready = False
 
     def compose(self):
         with Vertical(classes="dialog"):
@@ -45,7 +46,7 @@ class Panel(ModalScreen):
         self.query_one(self.initial_focus).focus()
 
     def on_resize(self):
-        if getattr(self, "ready", False):
+        if self.ready:
             self.limit_body()
 
     def limit_body(self):
@@ -169,11 +170,12 @@ class AddURLs(Panel):
 
     def action_cancel(self):
         if not self.saving:
-            self.dismiss(self.query_one(TextArea).text)
+            self.app.close_when_current(self, self.query_one(TextArea).text)
 
     @on(Button.Pressed, "#submit-add")
     def submit(self):
         if not self.saving:
+            self.set_focus(self.query_one(TextArea))
             self.app.own(self.save_draft())
 
     @on(Button.Pressed, "#add-recover")
@@ -220,7 +222,8 @@ class AddURLs(Panel):
             if accepted and not await self.commit(text, accepted):
                 return
             if not rejected:
-                self.dismiss("")
+                editor.load_text("")
+                self.app.close_when_current(self, "")
                 return
             editor.load_text("\n".join(raw for _, raw, _ in rejected))
             self.show_error("\n".join(f"Line {number} · {reason}" for number, _, reason in rejected))

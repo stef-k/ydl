@@ -11,7 +11,7 @@ from textual.widgets import Button, DataTable, Static, TabbedContent, TabPane
 
 from .terminal import clean, clip, display_path
 from .tui_dialogs import Panel
-from .tui_widgets import JobTable, button, row_metadata, transfer_text
+from .tui_widgets import JobTable, button, job_title, row_metadata, transfer_text
 
 DASH = "—"
 ROW_ACTIONS = (("details", "Details"), ("retry-selected", "Retry selected entry"),
@@ -111,7 +111,7 @@ class RecentJobs(Panel):
         entry = session.index.row(row_id)
         report = session.external.get(row_id)
         job = report.job if report else None
-        title = Path(job.destination).name if job and job.scope == "playlist" else job.items[0].title if job else row_id
+        title = job_title(job) if job else row_id
         if entry:
             view = session.index.view(row_id)
             title, _, _ = row_metadata(entry, view, session.plans.get(row_id))
@@ -227,6 +227,8 @@ class Details(Panel):
         inspected = view.inspection if entry else session.external.get(row_id)
         job = inspected.job if inspected else None
         plan = session.plans.get(row_id)
+        title = row_metadata(entry, view, plan)[0] if entry else job_title(job) if job else row_id
+        self.query_one(".dialog-title", Static).update(f"Job Details — {clean(title)}")
         status = job_status(session, row_id)
         result = session.results.get(row_id)
         diagnostic = self.diagnostic(entry, view, inspected, result)

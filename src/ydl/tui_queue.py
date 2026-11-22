@@ -270,18 +270,16 @@ class QueueIndex:
             self.recovering = False
             self.changed()
 
-    async def activate(self, choose, armed):
-        async with self.lock:
-            if not (armed() and self.runnable) or (entry := choose()) is None:
-                return None
-            self.notice = ""
-            prior = self.view(entry.id)
-            current = replace(entry, status="active")
-            if not await self.save(with_result(self.rows, current), required=True, result=entry):
-                return None
-            self.views[entry.id] = View("Active", prior.inspection)
-            self.changed()
-            return entry, prior
+    async def activate(self, entry):
+        """Save Active under the caller's mutation lock."""
+        self.notice = ""
+        prior = self.view(entry.id)
+        current = replace(entry, status="active")
+        if not await self.save(with_result(self.rows, current), required=True, result=entry):
+            return None
+        self.views[entry.id] = View("Active", prior.inspection)
+        self.changed()
+        return prior
 
     async def settle(self, result, view):
         async with self.lock:

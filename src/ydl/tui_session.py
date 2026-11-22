@@ -7,7 +7,7 @@ from pathlib import Path
 from . import jobs, runner
 from .models import Event, YdlError
 from .tui_queue import STARTABLE, QueueIndex, View, classify, missing_plan_message
-from .tui_backend import BackendReadiness
+from .tui_backend import BackendReadiness, backend_key
 
 
 class QueueSession:
@@ -138,16 +138,23 @@ class QueueSession:
                 if mode == "external":
                     await self.run_external(targets[0], prefs)
                     break
-                choose = lambda: self.index.row(self.next_id(mode, targets, attempted))
-                active = await self.index.activate(choose, allowed)
-                if active is None:
+                async with self.index.lock:
+                    current = await self.backend.read() if allowed() else None
+                    if current is None or not allowed():
+                        break
+                    # Release checks must run outside the queue mutation lock.
+                    key = backend_key(current)
+                    if key != backend_key(prefs) or key != self.backend.ready_key:
+                        continue
+                    entry = self.index.row(self.next_id(mode, targets, attempted))
+                    view = await self.index.activate(entry) if entry is not None else None
+                if view is None:
                     break
-                entry, view = active
                 attempted.add(entry.id)
                 if not allowed():
                     await self.index.settle(entry, view)
                     break
-                await self.run_entry(entry, view, prefs)
+                await self.run_entry(entry, view, current)
         finally:
             self.armed = False
             self.serial = None
