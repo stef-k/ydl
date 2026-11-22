@@ -62,6 +62,7 @@ class Result:
     log: Path | None = None
     attention: str = ""
     destination_changed: bool = False
+    output_conflict: bool = False
 
     @property
     def code(self) -> int:

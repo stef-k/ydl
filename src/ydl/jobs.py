@@ -220,13 +220,32 @@ class JobStore:
             raise YdlError("No incomplete ydl job is available.", 2)
         return job
 
+    def recent_ids(self, limit=20):
+        # The creation timestamp is immutable across atomic plan replacements.
+        # The separate inspector admits the plan itself under its shared lock.
+        ranked = []
+        for path in self.directory.glob("*.json"):
+            if JOB_ID.fullmatch(path.stem):
+                ranked.append((self.created_at(path), path.stem))
+        return [job_id for _, job_id in sorted(ranked, reverse=True)[:limit]]
+
+    @staticmethod
+    def created_at(path):
+        try:
+            fields = json.loads(path.read_bytes())
+            timestamp = fields.get("created_at")
+            return timestamp if type(timestamp) is int else 0
+        except (OSError, UnicodeError, ValueError, AttributeError):
+            return 0
+
     @contextmanager
     def claim(self, job_id, *, new=False):
         path = self.path(job_id)
-        if not new and not os.path.lexists(path):
+        lock_path = path.with_suffix(".lock")
+        if not new and not (os.path.lexists(path) or os.path.lexists(lock_path)):
             raise MissingPlan(f"Unknown job ID: {job_id}. Expected saved plan at {path}.", 2)
         self.directory.mkdir(parents=True, exist_ok=True)
-        with path.with_suffix(".lock").open("a") as lock:
+        with lock_path.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
@@ -320,6 +339,7 @@ async def inspect_job(store, job_id, *, enqueued=None):
         with store.observe(job_id):
             job = store.load(job_id)
             if job.enqueued_base is not None or enqueued is not None:
+                job = None
                 job = store.load(job_id, admit=True)
             if enqueued is not None:
                 safe_destination(enqueued)
@@ -337,7 +357,8 @@ async def inspect_job(store, job_id, *, enqueued=None):
 
 async def inspect_outputs(job):
     if not inspect_destination(job):
-        return Inspection("unfinished", job)
+        output = Path(job.destination) if job.scope == "playlist" else None
+        return Inspection("unfinished", job, output=output)
     verified = 0
     diagnostic = ""
     for item in job.items:

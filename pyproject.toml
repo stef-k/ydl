@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 
+[project.optional-dependencies]
+tui = ["textual>=8.2.8,<8.3"]
+
 [project.urls]
 Source = "https://github.com/stef-k/ydl"
 Issues = "https://github.com/stef-k/ydl/issues"
@@ -20,3 +23,6 @@ ydl = "ydl.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ydl = ["*.tcss"]

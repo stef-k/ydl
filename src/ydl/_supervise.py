@@ -37,6 +37,9 @@ class Tree:
             os.killpg(self.process.pid, sig)
         except ProcessLookupError:
             pass
+        self.signal_adopted(sig, children)
+
+    def signal_adopted(self, sig, children):
         for pid in children:
             try:
                 if os.getpgid(pid) != self.process.pid:
@@ -46,10 +49,14 @@ class Tree:
 
     def close(self, children):
         self.signal(signal.SIGTERM, children)
+        signalled = set(children)
         deadline = time.monotonic() + 2
         while children := self.reap():
             if time.monotonic() >= deadline:
                 self.signal(signal.SIGKILL, children)
+            else:
+                self.signal_adopted(signal.SIGTERM, set(children) - signalled)
+                signalled.update(children)
             time.sleep(0.02)
 
 

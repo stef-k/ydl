@@ -386,4 +386,5 @@ async def execute_items(job, store, checked, deps, emit, log, guard):
     store.save(job)
     attention = "\n".join([*conflicts, changed] if changed else conflicts)
     return Result(Path(job.destination), saved, len(diagnostics), tuple(diagnostics),
-                  job_id=job.id, log=log.path, attention=attention, destination_changed=bool(changed))
+                  job_id=job.id, log=log.path, attention=attention, destination_changed=bool(changed),
+                  output_conflict=bool(conflicts))

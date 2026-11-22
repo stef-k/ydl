@@ -84,6 +84,28 @@ it in future interactive Bash sessions.
 
 </details>
 
+## Use the terminal queue
+
+From the checkout, install the interactive frontend with `pipx install '.[tui]'`.
+If ydl is already installed with pipx, use `pipx install --force '.[tui]'`.
+Then run `ydl tui` in a terminal. You can also pass a URL to prefill the draft.
+
+1. Paste one YouTube link per line, choose the quality and destination, then
+   use **Add to Queue** and review the batch.
+2. Select **Start queue**. For links with both a video and a playlist, Auto
+   opens a scope chooser with **This video** selected.
+3. Use **Stop queue** or **Ctrl+C** to interrupt work. Reopen with `ydl tui`
+   and use **Resume queue** to continue in saved order.
+
+Open a row’s **⋮** menu or press **F2** on the queue to reorder pending entries,
+recheck saved work, or view job details and logs. **Retry failed** attempts failed
+entries once in queue order. **Help** lists the keyboard shortcuts.
+
+Keep the output directory in place during downloads. The queue is stored in
+`$XDG_STATE_HOME/ydl/tui-queue.json` (usually `~/.local/state/ydl/tui-queue.json`).
+If a queue save needs recovery, use **Recover queue** after addressing the error.
+Removing a queue entry preserves its output and saved job files.
+
 ## Download your first MP3
 
 Replace the example link with a YouTube link. Keep the quotes, especially

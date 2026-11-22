@@ -1,0 +1,272 @@
+"""Own the queue's one serial action and settle each invoked operation."""
+
+import asyncio
+from dataclasses import replace
+from pathlib import Path
+
+from . import jobs, runner
+from .models import Event, YdlError
+from .tui_queue import STARTABLE, QueueIndex, View, classify, missing_plan_message
+from .tui_backend import BackendReadiness
+
+
+class QueueSession:
+    def __init__(self, paths, disk, changed, decide):
+        self.paths, self.changed, self.decide = paths, changed, decide
+        self.store = jobs.JobStore(paths.state)
+        self.index = QueueIndex(disk, self.store, self.index_changed)
+        self.backend = BackendReadiness(paths, self.backend_changed)
+        self.serial = None
+        self.operation = None
+        self.armed = False
+        self.stopping = False
+        self.closing = False
+        self.active_id = None
+        self.events = {}
+        self.plans = {}
+        self.results = {}
+        self.external = {}
+        self.notice = ""
+
+    def index_changed(self):
+        if self.index.error:
+            self.armed = False
+        self.changed()
+
+    def backend_changed(self, *, defaults=False):
+        if self.backend.config_error:
+            self.armed = False
+        self.changed(defaults=defaults)
+
+    async def open(self):
+        await self.backend.read(launch=True)
+        self.changed(defaults=True)
+        await self.index.open(self.startup_backend)
+
+    def startup_backend(self):
+        if self.backend.startup_check_owed and not (self.backend.config_error or self.closing):
+            self.backend.start_check()
+
+    @property
+    def busy(self):
+        return self.serial is not None or self.stopping
+
+    @property
+    def media_allowed(self):
+        return self.index.runnable and not (self.busy or self.closing or self.backend.repair_at_launch)
+
+    @property
+    def external_allowed(self):
+        return self.index.editable and not (self.busy or self.closing or self.backend.repair_at_launch)
+
+    @property
+    def can_recover(self):
+        return bool(self.index.error and not (self.busy or self.closing or self.index.verifying or
+                                             self.index.recovering or self.backend.check))
+
+    @property
+    def backend_retry_visible(self):
+        return self.backend.config_error or self.backend.status.state in ("Unavailable", "Check pending")
+
+    @property
+    def can_retry_backend(self):
+        return (self.backend_retry_visible and self.index.editable and
+                not (self.busy or self.backend.check or self.closing))
+
+    async def recover(self):
+        if not self.can_recover:
+            return False
+        if not await self.index.recover():
+            return False
+        self.startup_backend()
+        return True
+
+    async def retry_backend(self):
+        if not self.can_retry_backend:
+            return
+        if await self.backend.read() and self.can_retry_backend:
+            self.backend.start_check()
+
+    def selected_retry(self, row_id):
+        view = self.index.view(row_id)
+        return view.status == "Failed" or (view.status == "Interrupted" and view.planned)
+
+    def candidates(self, mode, target=None):
+        rows = self.index.rows
+        if mode == "selected":
+            return [row.id for row in rows if row.id == target and self.selected_retry(row.id)]
+        eligible = STARTABLE if mode == "start" else {"Failed"}
+        return [row.id for row in rows if self.index.view(row.id).status in eligible]
+
+    def arm(self, mode, row_id=None):
+        if mode == "external":
+            target = self.external.get(row_id)
+            targets = [row_id] if target and target.state == "unfinished" else []
+        else:
+            targets = self.candidates(mode, row_id)
+        allowed = self.external_allowed if mode == "external" else self.media_allowed
+        if not allowed or not targets:
+            return
+        self.armed = True
+        self.notice = self.index.notice = ""
+        self.serial = asyncio.create_task(self.run_action(mode, targets))
+        self.changed()
+
+    def allowed(self, mode):
+        available = self.index.editable if mode == "external" else self.index.runnable
+        return self.armed and available and not self.closing
+
+    def next_id(self, mode, targets, attempted):
+        rows = targets if mode == "external" else self.candidates(mode, targets[0])
+        return next((row_id for row_id in rows if row_id not in attempted and
+                     (mode == "start" or row_id in targets)), None)
+
+    async def run_action(self, mode, targets):
+        attempted = set()
+        allowed = lambda: self.allowed(mode)
+        try:
+            while allowed() and self.next_id(mode, targets, attempted):
+                self.operation = asyncio.create_task(self.backend.prepare(allowed))
+                try:
+                    prefs = await self.operation
+                except asyncio.CancelledError:
+                    break
+                finally:
+                    self.operation = None
+                if prefs is None or not allowed():
+                    break
+                if mode == "external":
+                    await self.run_external(targets[0], prefs)
+                    break
+                choose = lambda: self.index.row(self.next_id(mode, targets, attempted))
+                active = await self.index.activate(choose, allowed)
+                if active is None:
+                    break
+                entry, view = active
+                attempted.add(entry.id)
+                if not allowed():
+                    await self.index.settle(entry, view)
+                    break
+                await self.run_entry(entry, view, prefs)
+        finally:
+            self.armed = False
+            self.serial = None
+            self.changed()
+
+    def record(self, row_id, event):
+        if event.settings is not None:
+            self.plans[row_id] = event
+        if event.stage not in ("job", "settings"):
+            self.events[row_id] = event
+        self.changed(progress=True)
+
+    def begin(self, row_id, *, entry=None, planned=True, prefs):
+        self.active_id = row_id
+        self.events[row_id] = Event("checking", "Preparing download")
+        self.results.pop(row_id, None)
+        args = dict(emit=lambda event: self.record(row_id, event), decide=self.decide, backend_ready=True)
+        if planned:
+            attempt = runner.retry(row_id, self.paths, prefs, **args)
+        else:
+            scope = None if entry.scope == "auto" else entry.scope
+            request = runner.Download(entry.url, scope, entry.quality, entry.keep_video, entry.output)
+            attempt = runner.download(request, self.paths, prefs, job_id=row_id, **args)
+        self.operation = asyncio.create_task(attempt)
+        self.changed()
+        return self.operation
+
+    async def run_entry(self, entry, view, prefs):
+        try:
+            result = await self.begin(entry.id, entry=entry, planned=view.planned, prefs=prefs)
+        except (OSError, TimeoutError, YdlError, asyncio.CancelledError) as exc:
+            settled, display = await self.entry_error(entry, view, exc)
+        else:
+            self.results[entry.id] = result
+            settled, display = await self.entry_result(entry, result)
+        finally:
+            self.operation = None
+        await self.index.settle(settled, display)
+        self.active_id = None
+        self.changed()
+
+    async def entry_error(self, entry, view, exc):
+        diagnostic = str(exc) or "Download stopped."
+        if isinstance(exc, jobs.OccupiedPlan):
+            observed = await self.inspect(entry.id, entry)
+            hint, display = classify(entry, observed, self.store)
+            return replace(entry, status=hint, diagnostic=diagnostic), display
+        if isinstance(exc, jobs.MissingPlan):
+            diagnostic = missing_plan_message(self.store, entry.id)
+        if isinstance(exc, runner.UncertainPlan):
+            return replace(entry, status="interrupted", diagnostic=diagnostic), View("Needs attention", diagnostic=diagnostic)
+        if isinstance(exc, (jobs.MissingPlan, jobs.JobBusy, jobs.PlanNeedsSync, jobs.DestinationChanged)):
+            return replace(entry, diagnostic=diagnostic), View("Needs attention", view.inspection, diagnostic)
+        return await self.attempt_outcome(entry, view, exc, diagnostic)
+
+    async def attempt_outcome(self, entry, view, exc, diagnostic):
+        planned = getattr(exc, "planned", view.planned or self.store.path(entry.id).exists())
+        if isinstance(exc, asyncio.CancelledError):
+            status = "interrupted" if planned else "pending"
+        elif isinstance(exc, runner.AttemptDismissed):
+            status = "interrupted" if planned else "cancelled"
+        else:
+            status = "failed" if planned else "failed_before_plan"
+        labels = {"interrupted": "Interrupted", "pending": "Pending", "cancelled": "Cancelled",
+                  "failed": "Failed", "failed_before_plan": "Failed"}
+        # Execution may have created a plan since the previous local inspection.
+        observation = view.inspection
+        if planned and observation is None:
+            observation = await self.inspect(entry.id, entry)
+        return replace(entry, status=status, diagnostic=diagnostic), View(labels[status], observation)
+
+    async def inspect(self, row_id, entry=None):
+        return await jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None)
+
+    async def entry_result(self, entry, result):
+        if result.declined:
+            diagnostic = "Playlist download declined"
+            return replace(entry, status="cancelled", diagnostic=diagnostic), View("Cancelled")
+        diagnostic = "\n".join(result.diagnostics)
+        if result.destination_changed and not result.output_conflict:
+            hint = "interrupted" if entry.status in ("pending", "cancelled") else entry.status
+            return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", diagnostic=result.attention)
+        hint = "failed" if result.failed else "complete"
+        observed = await self.inspect(entry.id, entry)
+        _, display = classify(replace(entry, status=hint), observed, self.store)
+        if result.attention:
+            display = View("Needs attention", observed, result.attention)
+        elif observed.state == "missing":
+            display = View("Failed" if result.failed else "Complete")
+        return replace(entry, status=hint, diagnostic=diagnostic), display
+
+    async def run_external(self, row_id, prefs):
+        try:
+            self.results[row_id] = await self.begin(row_id, prefs=prefs)
+        except (OSError, TimeoutError, YdlError, asyncio.CancelledError) as exc:
+            self.notice = str(exc) or "Download stopped."
+        finally:
+            self.operation = None
+            self.external[row_id] = await self.inspect(row_id)
+            self.active_id = None
+            self.changed()
+
+    async def stop(self, *, quitting=False):
+        if self.stopping:
+            if self.serial is not None:
+                await asyncio.shield(self.serial)
+            return
+        if not (self.busy or quitting):
+            return
+        self.armed = False
+        self.stopping = True
+        self.index.notice = ""
+        self.notice = "Stopping…"
+        self.changed()
+        work = self.serial, self.backend.check
+        for task in (self.operation, self.backend.check):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in work if task is not None), return_exceptions=True)
+        self.stopping = False
+        self.notice = "Queue stopped."
+        self.changed()

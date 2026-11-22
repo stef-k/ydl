@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add the optional `ydl tui` frontend with a persistent serial queue, playlist
+  choices, progress, settings, and saved-job retry.
+- Keep job ownership until managed command trees finish cleanup after a stop
+  or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
 - Manage private yt-dlp and optional Deno installations, including release
   checks and SHA-256 verification.
