@@ -1,50 +1,167 @@
 # ydl
 
-Download a YouTube video or playlist as MP3 on Linux. ydl manages a private
-yt-dlp executable, calls FFmpeg for conversion, and can retry unfinished work.
+**Save a YouTube video or an entire playlist as MP3 from your Linux terminal.**
+Give `ydl` a YouTube link and it downloads and converts the audio for you.
+Files go to `~/Downloads/ydl/` by default. You can also keep the video or
+resume an interrupted download.
 
-## Install
+[Install](#install-on-linux-mint-or-ubuntu) · [First download](#download-your-first-mp3) · [Switches](#common-switches) · [Defaults](#save-your-defaults)
 
-Use Python 3.11 or newer and install FFmpeg and ffprobe through your Linux
-distribution. YouTube also requires Deno 2.3+ or Node 22+ on your PATH. If
-neither is available, ydl can install a private Deno after you approve.
+## Install on Linux Mint or Ubuntu
 
-From a local checkout of the private repository, install into your account.
+### 1. Check Python and install FFmpeg
+
+You need Python 3.11 or newer. The `ffmpeg` package provides both FFmpeg and
+FFprobe.
 
 ```sh
+python3 --version
+sudo apt update
+sudo apt install ffmpeg
+```
+
+### 2. Get the source
+
+This is a private repository. Use a GitHub account with access. If you have
+the GitHub CLI, sign in with `gh auth login` if needed, then run the following.
+
+```sh
+gh repo clone stef-k/ydl
+cd ydl
+```
+
+With GitHub SSH access, you can also use
+`git clone git@github.com:stef-k/ydl.git` followed by `cd ydl`.
+
+### 3. Install the command with pipx
+
+Install `pipx` and run the following from the `ydl` checkout. By default
+`pipx` puts the `ydl` command in `~/.local/bin`. If you use `~/bin` for your
+own commands, run `export PIPX_BIN_DIR="$HOME/bin"` before `pipx install .`.
+Keep that export in your shell startup file to use `~/bin` for future pipx
+commands.
+
+```sh
+sudo apt install pipx
 pipx install .
+pipx ensurepath
+```
+
+If your newer Python is installed under a separate name, use a command such
+as `pipx install --python python3.11 .` for the install step. If your `apt`
+doesn't provide `pipx`, use the virtual environment instructions below.
+
+Open a new terminal to load the PATH change, then check that the command works
+from any directory.
+
+```sh
+command -v ydl
+ydl --help
+```
+
+To use `ydl` immediately in your current terminal, run
+`export PATH="$HOME/.local/bin:$PATH"`. Use `export PATH="$HOME/bin:$PATH"`
+if you installed the command there.
+
+<details>
+<summary>Install using a virtual environment instead of pipx</summary>
+
+From the checkout, install into a virtual environment in your home directory
+and link the command into `~/.local/bin`.
+
+```sh
+sudo apt install python3-venv
+python3 -m venv "$HOME/.local/share/ydl-venv"
+"$HOME/.local/share/ydl-venv/bin/python" -m pip install .
+mkdir -p "$HOME/.local/bin"
+ln -s "$HOME/.local/share/ydl-venv/bin/ydl" "$HOME/.local/bin/ydl"
+```
+
+If `~/bin` is already on your PATH, you can use it in the last two commands
+instead. If you use `~/.local/bin` and it is missing from your PATH, run
+`export PATH="$HOME/.local/bin:$PATH"`. Add that line to `~/.bashrc` to keep
+it in future interactive Bash sessions.
+
+</details>
+
+## Download your first MP3
+
+Replace the example link with a YouTube link. Keep the quotes, especially
+when the link contains `&`.
+
+```sh
 ydl 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-You can also run `pip install .` inside a virtual environment. The first
-download bootstraps yt-dlp. To check your prerequisites, run `ydl doctor`.
+On your first download, `ydl` installs its own copy of yt-dlp in your home
+directory. yt-dlp's bundled solver uses **Node.js 22+** or **Deno 2.3+** to
+get media links from YouTube's player. If you already have a compatible
+runtime on your PATH, `ydl` uses it. Otherwise, answer **Yes** at the Deno
+prompt to install a private copy for your account.
 
-## Use
+Press Enter at **Keep original video file(s)?** to accept the default of
+saving only an MP3. The settings stay on one line while the line below updates
+with download and conversion progress. The final summary tells you how many
+files were saved.
 
-- MP3s go to `~/Downloads/ydl/` by default. ydl uses the best available
-  audio-only source when possible and encodes at MP3 VBR quality `0`.
-  Choose `--quality 192K` for a fixed bitrate.
-- `--keep-video` saves the playable video alongside the MP3.
-- A video link with playlist context defaults to the video. Use `--playlist`
-  to select the full playlist. Playlists over 50 entries or of unknown size
-  need confirmation. `--yes` accepts the configured defaults and confirms
-  playlist size if playlist scope was selected.
-- The terminal shows the resolved settings above one in-place progress row.
-  Press Ctrl+C to stop and use `ydl retry` or `ydl retry JOB_ID` to continue.
-  Retry uses the original entries and preserves verified outputs.
-- Use `--output DIRECTORY` for this run or `ydl config set output DIRECTORY`
-  to save a new default. `ydl config show` shows the effective configuration.
-- The private backend checks the nightly channel by default. Use
-  `ydl config set channel stable` to switch, `ydl update --check` to compare
-  releases, or `--no-update` to use your installed backend for a download.
+### Download a playlist
 
-Config, data, and job state follow the XDG base directories. By default,
-preferences are in `~/.config/ydl/config.toml`, the backend is under
-`~/.local/share/ydl/`, and job records and diagnostics are under
-`~/.local/state/ydl/`.
+```sh
+ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
+ydl 'https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID' --playlist
+```
 
-See the [CLI specification](ydl-cli-spec.md) for the full behavior and the
-[changelog](CHANGELOG.md) for changes.
+A playlist-only link selects the whole playlist. A link that points to a
+specific video inside a playlist defaults to **This video**. Use
+`--playlist` to select the whole list. Playlists with **51 or more entries**
+or an unknown size ask for confirmation before downloading. Playlist tracks
+are numbered in a subfolder of the output directory.
+
+## Common switches
+
+| Switch | What it does |
+| --- | --- |
+| `--single` | Download only the video named in the link. |
+| `--playlist` | Select the entire playlist. The size confirmation still applies. |
+| `--yes` | Use the default scope and video-retention preference unless you pass explicit flags. If playlist scope is selected, also confirm a large or unknown-size playlist. JavaScript runtime installation still asks for permission. |
+| `--keep-video` / `--no-keep-video` | Choose whether to save the playable video alongside the MP3 for this run. |
+| `--quality 192K` | Set a fixed MP3 bitrate. For variable bitrate, use `0` through `9`, with `0` the highest quality and the default. |
+| `--output "$HOME/Music"` | Save this run to a different folder. |
+| `--no-update` | Use the already installed yt-dlp and skip its update check for this run. |
+
+For example, to save both files in Music, run
+`ydl 'https://www.youtube.com/watch?v=VIDEO_ID' --keep-video --output "$HOME/Music"`.
+
+## Save your defaults
+
+See your current settings with `ydl config show`. Settings apply to future
+downloads. A flag on the command line takes precedence for that run.
+
+| Setting | Built-in default | Example change |
+| --- | --- | --- |
+| Download folder | `~/Downloads/ydl/` | `ydl config set output "$HOME/Music"` |
+| MP3 quality | Variable bitrate, quality `0` | `ydl config set quality 192K` |
+| Keep the original video | Off | `ydl config set keep_video true` |
+| yt-dlp release channel | `nightly` | `ydl config set channel stable` |
+
+Automatic yt-dlp updates are enabled by default. To turn off automatic update
+checks for an existing backend, set `auto_update = false` in
+`~/.config/ydl/config.toml` or the corresponding XDG config location.
+
+## Retry, diagnose, or update
+
+| Command | When to use it |
+| --- | --- |
+| `ydl retry` | Continue the latest unfinished job after a failure or Ctrl+C. Completed files are kept. |
+| `ydl retry JOB_ID` | Retry a specific saved job using the ID shown when it stopped or failed. |
+| `ydl doctor` | Check FFmpeg, yt-dlp, the JavaScript runtime, and directory permissions. |
+| `ydl update` | Install or update the private yt-dlp executable now. |
+| `ydl update --check` | See the installed yt-dlp version and whether an install or update is available. |
+| `ydl --help` | Show download syntax and list other commands. |
+
+If a filename is already occupied, `ydl` leaves the file in place. Move it
+aside before retrying, or start a new download with a different `--output`.
+Job logs are in `~/.local/state/ydl/logs/` by default.
 
 ## Development
 
@@ -54,8 +171,9 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-CI runs the tests without downloading from YouTube. To validate live service
-compatibility before a release, use the smoke-test URL in the specification.
+CI runs the tests without downloading from YouTube. See the
+[CLI specification](ydl-cli-spec.md) for the complete behavior and the live
+smoke test, and the [changelog](CHANGELOG.md) for changes.
 
-ydl is available under the [MIT License](LICENSE). Installed third-party tools
-retain their own licenses.
+ydl is available under the [MIT License](LICENSE). Third-party tools retain
+their own licenses.
