@@ -1,6 +1,6 @@
 # ydl — Terminal UI (TUI) Design Specification
 
-**Status:** Proposed, iteration 3 — queue ownership and recovery\
+**Status:** Implementation-ready, iteration 4 — screen and control contract\
 **Target:** Linux terminal, Python 3.11+\
 **Builds on:** [`ydl-cli-spec.md`](ydl-cli-spec.md) and the existing implementation in [`stef-k/ydl`](https://github.com/stef-k/ydl)\
 **Scope:** Add an optional interactive frontend, not a new downloader.
@@ -35,7 +35,7 @@ The current repository already provides useful frontend boundaries:
 - `ydl tui URL` optionally pre-fills the URL input but **does not enqueue or download automatically**.
 - `ydl tui --help` describes the TUI command. `ydl --help`, `ydl retry`, `ydl doctor`, `ydl update`, and `ydl config` continue to work.
 - `ydl` without arguments retains its current behavior; do not silently change it to launch the TUI.
-- Require an interactive TTY for `ydl tui`. If unavailable or the terminal lacks basic capabilities, fail with a plain-text hint to use `ydl URL`. Avoid escape sequences before capability checks.
+- Require both stdin and stdout to be TTYs and `TERM` to be set to a value other than `dumb`. Fail with a plain-text hint to use `ydl URL` before writing escape sequences. Normal Quit exits `0`, even if queue entries failed. Invalid arguments use the parser's exit `2`.
 
 **Framework choice:** Use [Textual](https://textual.textualize.io/) (MIT) as an **optional** dependency. It already supplies responsive keyboard navigation, async workers, widgets, layout, and terminal-size handling. Do not create a homegrown curses framework or introduce Qt, GTK, Flatpak, Electron, or a persistent service.
 
@@ -50,14 +50,16 @@ From the checkout, install with `pipx install '.[tui]'`. An existing pipx instal
 
 ## 4. Layout and interaction
 
-One main screen is sufficient. It should fit comfortably at 80 columns by 24 rows and rearrange or collapse secondary panels in narrower terminals; never require mouse input. Prioritize the active transfer and queue over recent-history decoration.
+Use one main screen with a fixed dark Textual theme. Show the app name, package version when available, backend status, input form, queue, active transfer and action footer. Put Settings, Add URLs, Browse, Job Details, Recent jobs and Help in separate views opened on demand. `ydl Dark Theme Downloader UI Mockup.png` illustrates these views together. Use terminal cells and readable labels for the layout.
+
+At 80 columns by 24 rows, keep the form, queue, active transfer, Start/Resume or Stop, and keyboard help reachable. The compact queue shows position, title and status. At 100 columns and above, add Type, Track progress and Output columns. A smaller terminal can scroll the form and queue. Keep all secondary columns available in Job Details and allow all actions by keyboard. When a secondary view closes, restore focus to its opener or the queue if the opener is gone.
 
 ```text
-┌─ ydl ────────────────────────────── Backend: ready ─────────────┐
+┌─ ydl ─────────────────────────── Backend: up to date ───────────┐
 │ URLs [ Paste one or multiple links here ]  [ Add to queue ]     │
 │ Scope: [ Auto ▼ ]  Quality: [ VBR 0 ▼ ]  Keep video: [ ]        │
 │ Save to: [ ~/Downloads/ydl                                ]    │
-│ [ Start queue ]  [ Stop queue ]  [ Retry failed ] [ Settings ]   │
+│ [ Start queue / Stop queue ] [ Retry failed ] [ Settings ]      │
 ├─ Queue — 1 active / 2 pending / 1 complete / 0 failed ──────────┤
 │ ▶ 1. Playlist A    3/24  Downloading  56%  ETA 00:18            │
 │   2. Video B       Pending                                    │
@@ -68,19 +70,37 @@ One main screen is sufficient. It should fit comfortably at 80 columns by 24 row
 └─ Tab navigate · Enter select · Ctrl+C stop · Ctrl+Q quit ──────┘
 ```
 
-The mockup is illustrative, not pixel-prescriptive. Prefer a calm, information-dense layout with readable statuses rather than animations, album artwork, or decorative panels.
+Use text labels for status even when also using color or a symbol. Show help on demand instead of a permanent features panel. When an existing queue is restored, show a notice with its Pending and Interrupted counts after reconciliation. The next queue action or error replaces that notice.
 
 ### Serial URL queue (required)
 
 - Use the same Add URLs dialog for one URL or newline-separated URLs. Trim blank lines. Validate each line with `media.parse_url` and validate its selected scope with `media.validate_scope`. Commit the accepted entries together and keep rejected lines editable with their errors. Check duplicates against pending rows and the accepted lines of the current batch.
 - Each accepted URL becomes a separate queue entry. Save its canonical URL, requested scope, quality, video-retention choice, and destination. Expand `~` and resolve relative output paths at enqueue time so reopening from a different working directory preserves the destination. Map the stored `auto` scope to `None` at the runner boundary. The current configuration supplies defaults for new entries. Form edits leave saved entries unchanged.
-- Show an ordered list with the durable states below and transient stages such as Checking, Downloading, and Converting. Expose **Add**, **Remove pending**, **Move up/down pending**, **Start/Resume queue**, and **Retry failed**. While running, edits apply to pending rows only. Idle users may remove any inactive row or clear all completed rows. These actions remove queue entries only and leave job records, logs, partials, and published files in place.
+- Show the durable row states below and transient stages such as Checking, Downloading, and Converting. Use the queue actions table for enablement and placement.
 - Execute entries **strictly one at a time**: `await runner.download(...)` or `await runner.retry(...)` must finish (including conversion, verification, and publication) before the next starts. One queued playlist itself runs items serially using the existing runner. No parallel URL jobs, worker pool, or additional yt-dlp instances for media downloads.
 - **Start/Resume queue** processes Pending and Interrupted rows in their current displayed order. Additions, removals, and moves affect the next selection. **Retry failed** makes one pass over the Failed rows present when pressed, in queue order. It leaves Pending and Interrupted rows for Start/Resume. Each action attempts a row at most once. Both actions advance after an entry settles and its result is saved.
 - A failure stores the core diagnostic and exposes the job ID and log path when available. A refusal or dismissal follows the decision outcomes below. A recoverable entry failure leaves later entries eligible to run during the same action.
 - **Stop queue** and Ctrl+C close the scheduling gate immediately, cancel the active operation, and await subprocess cleanup. Record an active row as Interrupted after it settles. Keep its job plan and partials, along with all other rows and finished files. Start/Resume is available again after cleanup and a successful queue save or reload.
 - A brief queue summary reports count of queued URLs, completed URLs, failed URLs, and active playlist item position. Do not equate a playlist of 100 tracks with 100 queued URLs; distinguish URL queue progress from the existing per-playlist item progress.
 - Ask before adding an exact canonical duplicate of a pending or accepted batch URL. Rejected duplicates stay out of the transaction. The core retains its filename collision rules for distinct entries that resolve to the same output.
+
+### Queue actions and selection
+
+A queue action is busy while waiting on backend preparation, running, or settling after Stop. The same serial-worker gate applies to Start, both retry modes, and retry from Recent jobs. Select the first row when opening a nonempty queue or adding to an empty one. Keep selection by row ID across refreshes and moves. When the selected row is removed, select the next row at the same position or the preceding row if there is no next row.
+
+| Control | Enabled and result |
+| --- | --- |
+| **Start queue / Resume queue** | Primary action when idle and at least one Pending or Interrupted row is eligible. Use Resume if any eligible row is Interrupted; otherwise use Start. Run the Start/Resume action defined above. |
+| **Stop queue** | Replaces the primary action while an action is armed or running. Use the existing stop contract. While cleanup is in progress, show **Stopping…** and disable further starts and retries. |
+| **Retry failed** | Main-screen batch action, enabled while idle when at least one Failed row exists. Run the Failed rows once in queue order. |
+| **Retry selected entry** | Enabled while idle for a selected Failed row or an Interrupted row with a saved plan. Run only that row. Use `runner.retry(id)` for a saved plan or `runner.download()` with the reserved ID for a plan-less Failed row. Apply the same durable transitions as a queue run. |
+| **Details** | Open the selected row's Job Details even while the queue is running. Reading details does not claim or change the job. |
+| **Move up / Move down** | Swap a selected Pending row with the nearest Pending row in that direction. Other rows keep their positions. Disable the action when no such row exists. |
+| **Remove selected / Clear completed** | While busy, only Pending rows may be removed. While idle, any inactive row can be removed and completed rows can be cleared together. Confirmation states that the action removes queue entries only and defaults to Cancel. Recheck eligibility before committing the change. Preserve job plans, media, logs and partials. |
+| **Recheck** | Available for a Needs attention row while idle. Reconcile that row without starting work. |
+| **Retry backend** | Show beside backend status and in Settings when the backend check has failed without a usable fallback. Enable while idle and without another check in flight. Run the check without arming downloads. |
+
+Open the selected row's `⋮` menu from its button or `F2` on the queue table. Put Details, Retry selected entry, Move up, Move down, Remove selected, and Recheck in this menu. Display their unavailable states as disabled. Enqueued options are read-only. To change pending options, remove the pending row and add it again with the new choices.
 
 ### Persistent queue and restart recovery (required for the first TUI release)
 
@@ -151,45 +171,75 @@ Array order is queue order; the `id` is also the saved job ID once the runner cr
 
 ### URL entry and download options
 
-- Focus the URL entry on startup. Normal terminal paste (`Ctrl+Shift+V`, mouse paste, etc.) works without application clipboard integration. A multiline paste is accepted by the Add URLs dialog; a single URL follows the same queue path.
+- Focus the compact multiline URL draft on startup. Terminal paste works in the draft and Add URLs dialog. Display a terminal paste hint and leave system-clipboard reads outside this interface. Enter inserts a newline in the editor.
+- **Add to Queue** and the Add shortcut first validate the option fields and then open one Add URLs dialog for the entire draft. The dialog shows the selected options and has a multiline URL editor, **Add**, and **Cancel**. An empty submission shows **Enter at least one YouTube URL** and leaves the queue intact. Add commits the accepted lines together. Close the dialog and clear the draft when all lines were accepted. If some lines fail validation or duplicate confirmation, leave only the unadded lines in the dialog with their reasons. Cancel or Escape returns those unsubmitted lines to the main draft. Entries already saved stay in the queue.
 - **Scope**: Auto (default), Single video, Entire playlist. Auto delegates to existing `runner.scope_for`; show a modal for video-plus-playlist URLs. Pure playlist URLs use playlist scope. Preserve current large/unknown-playlist confirmation.
 - **Quality**: built-in default VBR `0`. Offer VBR `0`–`9` and common explicit bitrates (`192K`, `256K`, `320K`). Include a saved valid bitrate in the chooser even when it differs from these presets. Use `quality_value` to validate the selected value.
 - **Keep video**: checkbox, default from saved preferences. Pass its selected value explicitly to the runner to avoid a duplicate yes/no prompt.
-- **Destination**: editable path with default from preferences. Validate via the existing path code. No built-in filesystem browser required.
-- Adding a URL snapshots the current values for that queue entry. Settings can explicitly save the default quality, video retention, output directory and release channel. Validate and write the edited defaults together through the shared config code. Scope remains a per-entry choice and `auto_update` keeps its existing configured value.
+- **Destination**: editable path with default from preferences and a labeled **Browse** action. Use the existing path validator. The user can type a directory that has yet to be created.
 - If the URL or field is invalid, focus the affected control, show an inline actionable error, and leave the user-entered data intact.
+
+### Directory chooser and Settings
+
+- Use the same keyboard-accessible directory dialog for Browse in the main form and Settings. Start at the current field's resolved directory if it exists and is readable, otherwise use its nearest readable existing parent or the user's home directory. Use a Textual DirectoryTree restricted to directories. Enter expands or collapses a tree node. **Choose folder** copies the selected path into the field only. Cancel or Escape leaves the field unchanged. If a path cannot be opened, show the error and leave typed path entry available. The chooser does not create a directory or start work.
+- Settings has two tabs. **General** edits the default output directory, MP3 quality and Keep original video. **Backend** edits the Auto-update backend checkbox and Nightly/Stable selector. It also shows the same backend status and Retry backend action as the main screen. Scope remains a per-entry choice. The first release has no Downloads, Queue or Appearance settings tabs.
+- Open Settings from the gear or its shortcut. Initialize from the current shared configuration. **Save Settings** validates the five preference values together and commits them in one atomic write through the shared config code. On failure, keep the editor open and display the error. Successful Save closes the view and updates the main form's destination, quality and retention defaults while preserving its URL draft and scope. Cancel or Escape discards the edits. Queue rows keep their snapshots.
+- Settings can open while a job runs. Saving a channel or auto-update change invalidates readiness for the next operation and leaves the current job running. Retry backend is unavailable while a queue action or check is in progress.
 
 ### Decisions and confirmations
 
 Render the core's `Decision` question, options and default in a modal. Enter activates the focused choice, initially the core default. Await the response in the app-owned serial worker. Always settle or cancel the pending wait before leaving the dialog.
 
-- In Auto scope, a video with playlist context defaults to **This video**. Run TUI jobs with interactive decisions enabled and keep the core's confirmation for large or unknown-size playlists.
+- In Auto scope, the **Playlist selection** dialog offers **This video** and **Entire playlist**, with This video initially selected. The first scope dialog appears before metadata lookup. Show the available video and playlist IDs and omit media title, duration, artwork and item count from that dialog. Confirm passes the selected scope to the core. A separate size confirmation uses the count or unknown-size wording supplied by the core. Keep TUI runner decisions interactive.
 - Choosing **No** to a playlist confirmation uses the core's declined result and saves Cancelled. Choosing **No** to Deno installation uses the core's missing-runtime failure and saves Failed. Both allow the next queue entry to run after settlement.
 - Escape or Cancel in a runner dialog aborts only the current attempt. Return a distinct dismissal outcome to the scheduler. Save Cancelled if the attempt has no plan, or Interrupted if an existing plan is retained. Continue with the next eligible row, skipping the dismissed row for the rest of this action. A dismissed pre-plan dialog creates no job plan or transfer.
+- Show a runner prompt above any open input, Settings, or details view, preserving its draft and focus. If Quit confirmation is already open, hold the pending runner prompt until Stay is selected. Stop or confirmed Quit dismisses runner prompts and settles their waits without committing drafts in the underlying views.
 - Stop queue and Ctrl+C close the scheduling gate even while a runner dialog is visible. Dismiss the dialog, cancel and await the operation, and preserve a settled terminal result if one was already committed. Confirmed Quit uses the same stop path before exit. Declining Quit leaves the prior dialog or operation in place.
 
-### Job and results panel
+### Queue display and progress
 
-Show per-URL queue counts and the backend/update state, current stage (`checking`, `updating`, `metadata`, `downloading`, `converting`, `saved`, `failed`), title, playlist position and total when known, progress percentage, speed, ETA, completed/failed count, and destination. Use indeterminate progress when no reliable total exists. Do not invent conversion percentages or whole-playlist ETA.
+- Before a plan exists, label rows using IDs available from the URL, such as `Video VIDEO_ID`, `Playlist PLAYLIST_ID`, or `Video VIDEO_ID + playlist PLAYLIST_ID`. Use the requested scope to label a forced single or playlist entry. Type is Video, Playlist, or Video + playlist for unresolved Auto scope. Show a playlist count only once the core provides the saved plan or playlist total. Adding and restoring rows never fetch titles, durations or artwork from YouTube.
+- With a saved single-video plan, use the item title. With a saved playlist plan, use the saved destination folder name. Read those fields and final paths from the shared job inspection boundary. During execution, use Settings events for scope and destination and item events for the current track title and position. Type, output and known counts are available in Job Details even when their table columns are hidden.
+- Label a percentage or bar **Track progress**. For a playlist, also show its `3/24` position separately. Keep speed and ETA scoped to the current transfer. Show indeterminate progress during an active stage with no reliable percentage. Clear transfer metrics as the active item or stage changes. Completed rows can show 100% after verification. Inactive unfinished or failed rows show a dash instead of a stale percentage.
+- Show the actual MP3 filename when a single-video output is verified and the resolved folder for a planned playlist. For an unplanned row, show a dash in Output and the enqueued base directory in Info. On settlement show the core's success and failure counts, resolved destination when available, and actionable diagnostic on failure. Queue counts measure URL rows.
 
-After completion show a short summary and output path. On failure show the human-readable core diagnostic. Offer to reveal or copy the log path when a log file exists, including for failures during planning. Before a plan exists, identify the queue row by its reserved ID and distinguish it from a job that `ydl retry` can load.
+### Job Details
+
+Open Job Details for the selected queue row or recent job, with the **Progress** tab selected. **Close** and Escape return focus to the opener. Keep the view tied to that entry when the table selection later changes or a different job starts.
+
+| Tab | Contents |
+| --- | --- |
+| **Progress** | Row status, stage, current track and position, track percentage, speed and ETA when available, plus the final result after settlement. Use saved status and verified counts for an inactive job. |
+| **Log** | Show the log path and at most the last 200 lines or 64 KiB of the existing log, whichever is smaller, as plain text. Indicate when older text is omitted. Load on entry and on **Refresh** in a read-only worker. Show **No log yet** for a missing file and an actionable error for a failed read. **Copy log path** requests terminal clipboard copy when a log path exists. Keep the path visible for manual copying. |
+| **Info** | Show the reserved queue ID, core job ID when a plan exists, canonical URL when known, requested and resolved scope when known, MP3 quality, Keep video, enqueued base directory when known, resolved output, and latest diagnostic. Mark unavailable fields with a dash. |
+
+The Details action is **Retry selected entry** for a queued row or **Retry selected job** for a recent job outside the queue. Apply the same eligibility and worker rules as their other entry points. Retry targets the whole saved job's unfinished work. There is no retry for an individual track within a playlist.
 
 ### Recent jobs and retry
 
-Show a small bounded list of recent saved jobs. For jobs without queue history, display Verifying, Complete after output verification, Incomplete, or Needs attention with the reason. Use the queue's Failed and Interrupted distinctions for linked rows and Active for work currently owned by this TUI. The core records do not need a new history field. **Retry selected job** runs `runner.retry(id)` for that job through the same serial worker and backend gate. When it belongs to a queue row, update that row through the same durable transitions. External jobs stay outside the queue index.
+Open **Recent jobs** from the footer. Show the 20 most recently created saved jobs, ordered newest first with job ID descending as the tie-breaker. For jobs without queue history, display Verifying, Complete after output verification, Incomplete, or Needs attention with the reason. Use the queue's Failed and Interrupted distinctions for linked rows and Active for work currently owned by this TUI. The core records do not need a new history field. **Retry selected job** is enabled while idle for an Incomplete external job and calls `runner.retry(id)` through the serial worker and backend gate. Linked jobs use the queue's selected-entry action. External jobs stay outside the queue index.
 
 Share a read-only inspection boundary for queue reconciliation and the recent-jobs list. Apply the same verification receipts used by retry. The query leaves job state untouched, uses no exclusive claim, and does not create a lock file. A malformed historical record is flagged without preventing fresh downloads.
 
 ## 5. Keyboard behavior
 
-- `Tab` / `Shift+Tab`: move between interactive controls; arrow keys navigate selections.
-- `Enter`: activate focused control or confirm the currently focused dialog choice.
-- `Escape`: close the current dialog, or return focus without changing state.
-- `Ctrl+C`: stop a running queue or cancel a Start/Retry request waiting on backend preparation. It has no queue effect when idle.
-- `Ctrl+Q`: quit. If work is active or a queue action is armed, ask whether to stop and exit or stay. Cancel and await any startup worker before exit, including when there is no running job.
-- Provide visible Help (`?` or an explicit Help control), including shortcuts. Avoid global single-letter shortcuts firing while a text input has focus.
+Show a Help button in the footer and list these bindings in Help. Apply action eligibility to both button and keyboard activation. Suppress the main-screen shortcuts when a text editor or modal has focus. Tab, Escape, Ctrl+C and Ctrl+Q still work within their defined contexts.
 
-An active job is not an invitation to run another one. While a queue is running, allow adding pending URLs and viewing status, but disable starting another runner/queue. One active runner operation at a time, across all URLs and playlist items, is the TUI concurrency contract.
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move focus forwards or backwards. Arrow keys navigate the focused queue, menu, tab list, tree or choice list. |
+| `Enter` | Open Details on a queue row. In an editor or chooser, use the behavior defined for that field. Otherwise activate the focused control or dialog choice. |
+| `Escape` | Close the topmost dialog or menu as Cancel. The runner-dialog dismissal rules apply to a runner prompt. |
+| `a` | Open Add URLs. |
+| `r` / `Shift+R` | Retry selected entry / Retry failed. |
+| `d` | Open Details for the selected row. |
+| `s` | Open Settings. |
+| `F2` | Open the selected queue row's action menu. |
+| `Delete` | Request removal of the selected queue row. Inside a text editor, retain normal text deletion. |
+| `c` | Request Clear completed. |
+| `Ctrl+C` | Stop a running queue or cancel its armed Start/Retry request. It has no queue effect when idle. |
+| `Ctrl+Q` | Quit. While an operation is active or a queue action armed, offer **Stop and quit** and **Stay**, with Stay as the default. Cancel and await all owned workers before exit. |
+| `?` | Open Help. |
 
 ## 6. Architecture and lifecycle
 
@@ -219,6 +269,7 @@ Only create additional modules if tests show a real need. Keep `src/ydl/terminal
 - If Stop or Ctrl+C arrives while a request is waiting, disarm it before cancelling and awaiting the updater. Stop leaves untouched rows unchanged. Confirmed Quit also cancels and awaits the updater and any active operation before exit. An updater completion that races with Stop or Quit cannot start a new row.
 - A successful check, including a usable fallback, covers subsequent work under the same configured channel and `auto_update` policy for that session. Re-read operational preferences before starting a queue action and before each new runner invocation. Changes to the channel or update policy invalidate readiness before the next job. Queue entries retain their enqueued media options. If the core reports that the executable has become missing or unusable, show that error, retain the row's pre-attempt hint, invalidate readiness and disarm scheduling. The next explicit Start or Retry checks again.
 - Route both `runner.download()` and `runner.retry()` through this gate and pass `no_update=True` to each. Add the optional `no_update` argument to `runner.retry()` with its current behavior as the default. Use the core installation lock and a single TUI updater task. Never run updates concurrently with TUI media operations. FFmpeg and runtime checks remain in the runner.
+- Publish a structured backend status to the frontend with the installed version when known. Show **Check pending** before preparation or after a preference change, **Checking** during a release check, and **Updating** during installation or replacement. Show **Up to date** after a successful comparison or installation, **Ready · updates off** when a usable backend skipped its update check, **Ready · using installed version** with a warning after fallback, and **Unavailable** after hard failure. Derive these states in the shared backend layer and preserve the existing CLI messages.
 
 ### State model
 
@@ -240,7 +291,7 @@ Use output escaping for untrusted YouTube titles, metadata, errors, and paths, i
 
 **Must preserve:** Existing `ydl URL`, flags, prompts, config, default output path, MP3 quality semantics, yt-dlp update channel, video retention, cancellation, and `ydl retry` behavior. Scripts must keep working and the base package must remain installable without Textual.
 
-**Not in this iteration:** Playback, thumbnails or album art, media library management, search within YouTube, **parallel downloads**, background downloading after terminal exit, pause button (stop + retry is sufficient), scheduling, browser integration, cookies/login UI, remote web server, native desktop window, and full audio tagging.
+**Outside this release.** Playback, thumbnails, album art, duration badges, desktop clipboard reads, theme selection, in-place queue option editing, per-track retry, and true process pause. Use Stop followed by Resume for interruption and recovery. Media library management, YouTube search, parallel downloads, background downloading after terminal exit, scheduling, browser integration, cookies/login UI, a web server, a native desktop window and full audio tagging stay outside scope.
 
 ## 9. Tests and release acceptance
 
@@ -250,12 +301,12 @@ Use Textual Pilot and a fake runner to test the UI. Exercise crash ownership and
 2. **Compatibility.** Existing CLI behavior, tests, and base package installation continue to work with Textual absent.
 3. **Single item:** pasting a watch URL, retaining default VBR 0 and video-off, adding to queue, and starting it calls the existing runner with exactly those values.
 4. **Playlist safety.** Auto defaults to This video for `watch?v=...&list=...`; choosing playlist uses the existing playlist path and any size confirmation. Dismissing a modal affects only its entry. Stop while the same modal is open prevents any later entry from starting.
-5. **Options:** toggling keep-video, changing quality/output, and explicitly saving new defaults behave correctly; incidental job settings never overwrite config.
+5. **Options and Settings.** The typed destination and Browse confirmation affect the correct field. Browse Cancel preserves its text. Saving General and Backend options writes one config update, including Auto-update, and updates defaults for future entries without changing queue snapshots. Saving a channel or policy change during a job applies before the next operation. Cancel leaves the config intact.
 6. **Responsive progress:** the startup backend check and fake slow metadata, update, transfer and conversion operations do not freeze keyboard navigation or redraws. The serial queue waits for its startup check and uses the checked backend; show indeterminate progress where no metrics are present.
 7. **Cancel and quit.** Ctrl+C and confirmed Quit stop work during media processing or while waiting for backend preparation. Pending entries remain intact and the next URL never starts. Declining Quit leaves the prior operation in place. Stop still cancels and settles work if saving the interruption fails.
 8. **Retry and locking.** A locked job remains untouched. Retry failed attempts the Failed rows once and Start/Resume skips them. Retry uses the saved plan when present and the original ID and enqueue options when planning never completed. Recent jobs without queue history show only states the core can establish.
 9. **Errors:** missing dependencies, video unavailability, format errors, and invalid URLs result in readable on-screen diagnostics and accessible logs.
-10. **Terminal sizes:** operate by keyboard at 80×24, recover from terminal resize, and collapse secondary panels without hiding essential input/status controls.
+10. **Terminal sizes.** Operate by keyboard at 80×24 and after resizing. At 100 columns or more show the extra queue columns. On narrower screens retrieve their values from Details. Modals, Settings and Help return focus to the originating control.
 11. **Serial batch.** Add A/B/C and run them in order, with all of B's playlist entries settled before C starts. Pending edits affect the next selection, invalid lines remain editable, and a duplicate within the same paste requires confirmation.
 12. **Queue persistence.** Enqueue A/B/C, reopen from another working directory, and recover their original order and absolute destinations without starting work. Stop during B, reopen again, and show A Complete, B Interrupted, and C Pending. Resume uses B's original job ID before processing C.
 13. **Crash consistency.** Interrupt just before the core plan is saved, just after it is durably saved, and just after work finishes but before the queue result is saved. Restore the expected states and reuse the same job ID. Verify contention during preassigned plan creation, and simulate queue save errors on both sides of replacement. A corrupt or unsupported queue stays intact and unscheduled.
@@ -264,6 +315,8 @@ Use Textual Pilot and a fake runner to test the UI. Exercise crash ownership and
 16. **Changed availability.** Reopen with a pending URL that has disappeared and show its Failed entry while the next URL succeeds. Resume a saved playlist whose original URL and one unfinished video are gone. Use saved IDs, keep verified files, finish the available entries, and advance the URL queue after marking the playlist Failed. Reopening a fully verified row makes no YouTube request.
 17. **Backend reuse.** A queue with new downloads and saved retries uses one normal release check under unchanged settings. Verify usable fallback, hard failure with untouched entries, and rechecking after a channel change. A stopped Start request cannot launch a row when a check later settles.
 18. **Packaging.** Install `.[tui]` through pipx and launch the installed command on Linux. Verify the test suite exercised the TUI extra and the tested Textual range in package metadata.
+19. **Actions and shortcuts.** Check the primary Start/Resume/Stop states, selected retry versus batch retry, pending reorder, and index-only removal and clear confirmations. Exercise row menu and shortcuts by keyboard. Typing into the URL editor never fires the single-letter shortcuts.
+20. **Metadata and Details.** The initial scope dialog and unplanned rows render without a YouTube metadata request. Track percentages, position and unknown values render as specified. Details stays tied to the selected job, shows available Info fields, and reads a bounded log with a usable missing-file state.
 
 A separate manual smoke test should use the previously troublesome `https://www.youtube.com/watch?v=vvpZOaQz6SM` link to verify that the TUI downloads and produces a playable MP3 through the *same* engine as the CLI. Passing the TUI test alone does not prove YouTube extraction still works.
 
