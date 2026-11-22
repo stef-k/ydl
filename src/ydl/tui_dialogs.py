@@ -12,7 +12,7 @@ from textual.widgets import (Button, Checkbox, DirectoryTree, Input, Label, Radi
 
 from . import config
 from .models import YdlError
-from .terminal import clean
+from .terminal import clean, clean_lines
 from .tui_queue import Entry
 from .tui_widgets import button, format_backend, quality_options, select
 
@@ -161,7 +161,7 @@ class AddURLs(Panel):
         super().sync()
         session = self.app.session
         error = session.index.error
-        self.query_one("#add-storage", Static).update(clean(error))
+        self.query_one("#add-storage", Static).update(clean_lines(error))
         recover = self.query_one("#add-recover", Button)
         recover.display = bool(error)
         recover.disabled = not session.can_recover
@@ -189,7 +189,11 @@ class AddURLs(Panel):
     async def parse_draft(self, text):
         accepted, rejected = [], []
         index = self.app.session.index
-        seen = {row.url for row in index.rows if index.view(row.id).status == "Pending"}
+        seen = set()
+        for row in index.rows:
+            status = index.view(row.id).status
+            if status == "Pending" or (status == "Verifying" and row.status == "pending"):
+                seen.add(row.url)
         for line_number, raw in enumerate(text.splitlines(), 1):
             if not raw.strip() or self.app.session.closing:
                 continue
@@ -240,7 +244,7 @@ class AddURLs(Panel):
             self.recovery_draft = text, accepted
             self.app.recovery_draft = self.recovery_draft
             self.app.refresh_views()
-        self.show_error(clean(index.error or index.notice or "The queue cannot accept changes right now."))
+        self.show_error(clean_lines(index.error or index.notice or "The queue cannot accept changes right now."))
         return False
 
     def recovered(self, draft):

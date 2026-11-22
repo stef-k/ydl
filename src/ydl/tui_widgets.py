@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, Select, Static, TextArea
 
 from . import media
-from .terminal import clean, clip, metrics
+from .terminal import clean, clean_lines, clip, metrics
 
 SCOPE_CHOICES = [("Auto", "auto"), ("Single video", "single"), ("Entire playlist", "playlist")]
 STAGES = {"checking": "Checking", "updating": "Updating", "metadata": "Fetching metadata",
@@ -137,6 +137,7 @@ class Dashboard(Screen):
         self.rendered = ()
         self.table_columns = ()
         self.position = 0
+        self.notice_text = None
 
     def compose(self):
         try:
@@ -183,7 +184,8 @@ class Dashboard(Screen):
                     yield button("Help", "help")
                     yield button("Quit", "quit")
                 with Horizontal(id="status-line"):
-                    yield Static("", id="notice", markup=False)
+                    with VerticalScroll(id="notice-scroll"):
+                        yield Static("", id="notice", markup=False)
                     yield button("Recover queue", "recover", "warning")
 
     def on_mount(self):
@@ -227,9 +229,7 @@ class Dashboard(Screen):
         backend = session.backend.status
         color = "#ff7c85" if backend.state == "Unavailable" else "#a6daae" if backend.version else "#c6ddff"
         self.query_one("#backend-status", Static).update(Text(format_backend(backend), style=color))
-        notice = session.index.error or session.backend.config_error or session.index.notice or session.notice
-        self.query_one("#notice", Static).update(clean(notice or session.backend.status.detail or
-                                                       "Tab navigate · Enter select · Ctrl+C stop · Ctrl+Q quit"))
+        self.update_notice(session)
         counts = Counter(session.index.view(row.id).status for row in session.index.rows)
         event = session.events.get(session.active_id)
         active = f" · Active {event.position}/{event.total}" if event and event.position else ""
@@ -242,6 +242,21 @@ class Dashboard(Screen):
         bar_width = min(48, max(18, self.size.width // 4))
         self.query_one("#transfer", Static).update(
             transfer_text(event, "Preparing backend…" if session.busy else "", bar_width))
+
+    def update_notice(self, session):
+        index, backend = session.index, session.backend
+        error = index.error or backend.config_error
+        action = index.notice or session.notice
+        detail = backend.status.detail
+        notice = error or "\n".join(filter(None, (detail, action))) or index.restore_notice
+        text = clean_lines(notice or "Tab navigate · Enter select · Ctrl+C stop · Ctrl+Q quit")
+        scroll = self.query_one("#notice-scroll", VerticalScroll)
+        scroll.set_class(bool(error or detail), "-diagnostic")
+        scroll.can_focus = bool(notice)
+        if text != self.notice_text:
+            self.query_one("#notice", Static).update(text)
+            scroll.scroll_home(animate=False, immediate=True)
+            self.notice_text = text
 
     def columns(self, width):
         if width >= 100:

@@ -145,6 +145,10 @@ class QueueIndex:
         self.recovering = False
         self.error = ""
         self.notice = ""
+        self.restore_notice = ""
+
+    def clear_notice(self):
+        self.notice = self.restore_notice = ""
 
     def row(self, row_id):
         return next((entry for entry in self.rows if entry.id == row_id), None)
@@ -169,15 +173,17 @@ class QueueIndex:
         if rows is not None and not self.error:
             pending = sum(self.view(row.id).status == "Pending" for row in self.rows)
             interrupted = sum(self.view(row.id).status == "Interrupted" for row in self.rows)
-            self.notice = f"Queue restored · {pending} Pending · {interrupted} Interrupted"
+            self.restore_notice = f"Queue restored · {pending} Pending · {interrupted} Interrupted"
             self.changed()
 
     async def admit(self, *, allow_missing=False):
         try:
             rows = await asyncio.to_thread(self.disk.read, allow_missing=allow_missing)
         except (OSError, AttributeError, TypeError, ValueError, KeyError, YdlError) as exc:
-            self.error = (f"Cannot admit {self.disk.path}: {exc}. Restore a valid copy and Recover queue, "
-                          "or move it aside and reopen. Saved jobs also support ydl retry JOB_ID.")
+            self.error = (f"Cannot admit queue: {exc}.\nQueue: {self.disk.path}\n"
+                          "Restore a valid copy and choose Recover queue.\n"
+                          "Or move the file aside and reopen.\n"
+                          "Saved jobs also support ydl retry JOB_ID.")
             self.changed()
             return None
         self.rows = rows or []
@@ -211,7 +217,7 @@ class QueueIndex:
         async with self.lock:
             if not self.editable:
                 return False
-            self.notice = ""
+            self.clear_notice()
             rows = transform(self.rows)
             if rows is None:
                 return False
@@ -224,7 +230,7 @@ class QueueIndex:
     async def recheck(self, row_id=None):
         targets = [row for row in self.rows if row_id is None or row.id == row_id]
         self.verifying = True
-        self.notice = ""
+        self.clear_notice()
         self.views.update({row.id: View("Verifying") for row in targets})
         self.changed()
         try:
@@ -272,7 +278,7 @@ class QueueIndex:
 
     async def activate(self, entry):
         """Save Active under the caller's mutation lock."""
-        self.notice = ""
+        self.clear_notice()
         prior = self.view(entry.id)
         current = replace(entry, status="active")
         if not await self.save(with_result(self.rows, current), required=True, result=entry):

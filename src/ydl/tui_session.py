@@ -36,6 +36,8 @@ class QueueSession:
     def backend_changed(self, *, defaults=False):
         if self.backend.config_error:
             self.armed = False
+        if self.backend.config_error or self.backend.status.detail:
+            self.index.restore_notice = ""
         self.changed(defaults=defaults)
 
     async def open(self):
@@ -85,6 +87,7 @@ class QueueSession:
         if not self.can_retry_backend:
             return
         if await self.backend.read() and self.can_retry_backend:
+            self.index.restore_notice = ""
             self.backend.start_check()
 
     def selected_retry(self, row_id):
@@ -108,7 +111,8 @@ class QueueSession:
         if not allowed or not targets:
             return
         self.armed = True
-        self.notice = self.index.notice = ""
+        self.notice = ""
+        self.index.clear_notice()
         self.serial = asyncio.create_task(self.run_action(mode, targets))
         self.changed()
 
@@ -151,10 +155,7 @@ class QueueSession:
                 if view is None:
                     break
                 attempted.add(entry.id)
-                if not allowed():
-                    await self.index.settle(entry, view)
-                    break
-                await self.run_entry(entry, view, current)
+                await self.run_entry(mode, entry, view, current)
         finally:
             self.armed = False
             self.serial = None
@@ -167,29 +168,33 @@ class QueueSession:
             self.events[row_id] = event
         self.changed(progress=True)
 
-    def begin(self, row_id, *, entry=None, planned=True, prefs):
+    async def invoke(self, mode, row_id, prefs, *, entry=None, planned=True):
+        # Stop can run after this task is queued and before it enters the runner.
+        if not self.allowed(mode):
+            return None
         self.active_id = row_id
         self.events[row_id] = Event("checking", "Preparing download")
         self.results.pop(row_id, None)
+        self.changed()
         args = dict(emit=lambda event: self.record(row_id, event), decide=self.decide, backend_ready=True)
         if planned:
-            attempt = runner.retry(row_id, self.paths, prefs, **args)
-        else:
-            scope = None if entry.scope == "auto" else entry.scope
-            request = runner.Download(entry.url, scope, entry.quality, entry.keep_video, entry.output)
-            attempt = runner.download(request, self.paths, prefs, job_id=row_id, **args)
-        self.operation = asyncio.create_task(attempt)
-        self.changed()
-        return self.operation
+            return await runner.retry(row_id, self.paths, prefs, **args)
+        scope = None if entry.scope == "auto" else entry.scope
+        request = runner.Download(entry.url, scope, entry.quality, entry.keep_video, entry.output)
+        return await runner.download(request, self.paths, prefs, job_id=row_id, **args)
 
-    async def run_entry(self, entry, view, prefs):
+    async def run_entry(self, mode, entry, view, prefs):
+        settled, display = entry, view
+        self.operation = asyncio.create_task(self.invoke(mode, entry.id, prefs, entry=entry, planned=view.planned))
         try:
-            result = await self.begin(entry.id, entry=entry, planned=view.planned, prefs=prefs)
+            result = await self.operation
         except (OSError, TimeoutError, YdlError, asyncio.CancelledError) as exc:
-            settled, display = await self.entry_error(entry, view, exc)
+            if self.active_id == entry.id:
+                settled, display = await self.entry_error(entry, view, exc)
         else:
-            self.results[entry.id] = result
-            settled, display = await self.entry_result(entry, result)
+            if result is not None:
+                self.results[entry.id] = result
+                settled, display = await self.entry_result(entry, result)
         finally:
             self.operation = None
         await self.index.settle(settled, display)
@@ -247,15 +252,20 @@ class QueueSession:
         return replace(entry, status=hint, diagnostic=diagnostic), display
 
     async def run_external(self, row_id, prefs):
+        self.operation = asyncio.create_task(self.invoke("external", row_id, prefs))
         try:
-            self.results[row_id] = await self.begin(row_id, prefs=prefs)
+            result = await self.operation
+            if result is not None:
+                self.results[row_id] = result
         except (OSError, TimeoutError, YdlError, asyncio.CancelledError) as exc:
-            self.notice = str(exc) or "Download stopped."
+            if self.active_id == row_id:
+                self.notice = str(exc) or "Download stopped."
         finally:
             self.operation = None
-            self.external[row_id] = await self.inspect(row_id)
-            self.active_id = None
-            self.changed()
+            if self.active_id == row_id:
+                self.external[row_id] = await self.inspect(row_id)
+                self.active_id = None
+                self.changed()
 
     async def stop(self, *, quitting=False):
         if self.stopping:
@@ -266,7 +276,7 @@ class QueueSession:
             return
         self.armed = False
         self.stopping = True
-        self.index.notice = ""
+        self.index.clear_notice()
         self.notice = "Stopping…"
         self.changed()
         work = self.serial, self.backend.check

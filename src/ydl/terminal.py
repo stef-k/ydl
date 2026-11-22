@@ -18,6 +18,10 @@ def clean(text):
     return "".join(" " if unicodedata.category(char).startswith("C") else char for char in str(text))
 
 
+def clean_lines(text):
+    return "\n".join(clean(line) for line in str(text).splitlines())
+
+
 def width(char):
     if unicodedata.combining(char):
         return 0
