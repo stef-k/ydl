@@ -1,0 +1,114 @@
+"""Preferences and user-writable paths."""
+
+import json
+import os
+import re
+import tempfile
+import tomllib
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from .models import YdlError
+
+
+@dataclass(frozen=True)
+class Paths:
+    config: Path
+    data: Path
+    state: Path
+
+    @classmethod
+    def discover(cls):
+        home = Path.home()
+
+        def locate(name, fallback):
+            value = Path(os.environ.get(name, ""))
+            return (value if value.is_absolute() else home / fallback) / "ydl"
+
+        return cls(
+            locate("XDG_CONFIG_HOME", ".config") / "config.toml",
+            locate("XDG_DATA_HOME", ".local/share"),
+            locate("XDG_STATE_HOME", ".local/state"),
+        )
+
+    @property
+    def backend(self):
+        return self.data / "bin" / "yt-dlp"
+
+
+@dataclass(frozen=True)
+class Preferences:
+    output: str = "~/Downloads/ydl"
+    quality: str = "0"
+    keep_video: bool = False
+    auto_update: bool = True
+    channel: str = "nightly"
+
+
+def quality_value(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[0-9]|[1-9][0-9]*[Kk])", value):
+        raise YdlError("Quality must be a VBR setting from 0 to 9 or a bitrate such as 192K.", 2)
+    return value.upper()
+
+
+def output_path(value):
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise YdlError("Output must name a directory.", 2)
+    try:
+        return Path(value).expanduser().resolve()
+    except (RuntimeError, ValueError) as exc:
+        raise YdlError(f"Invalid output directory: {exc}", 2) from exc
+
+
+def validate(values):
+    for key, value in values.items():
+        if key not in Preferences.__dataclass_fields__:
+            raise YdlError(f"Unknown configuration key: {key}", 2)
+        if key in ("keep_video", "auto_update") and type(value) is not bool:
+            raise YdlError(f"{key} must be true or false.", 2)
+    prefs = Preferences(**values)
+    if prefs.channel not in ("stable", "nightly"):
+        raise YdlError("Channel must be stable or nightly.", 2)
+    output_path(prefs.output)
+    return Preferences(**{**asdict(prefs), "quality": quality_value(prefs.quality)})
+
+
+def load(path):
+    try:
+        with path.open("rb") as stream:
+            return validate(tomllib.load(stream))
+    except FileNotFoundError:
+        return Preferences()
+    except (OSError, ValueError) as exc:
+        raise YdlError(f"Cannot read configuration {path}: {exc}", 2) from exc
+
+
+def toml_text(prefs):
+    def literal(value):
+        return str(value).lower() if isinstance(value, bool) else json.dumps(value, ensure_ascii=False)
+
+    return "".join(f"{key} = {literal(value)}\n" for key, value in asdict(prefs).items())
+
+
+def set_value(path, prefs, key, value):
+    if key == "keep_video":
+        if value not in ("true", "false"):
+            raise YdlError("keep_video must be true or false.", 2)
+        value = value == "true"
+    updated = validate({**asdict(prefs), key: value})
+    atomic_write(path, toml_text(updated).encode())
+    return updated
+
+
+def atomic_write(path, data, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fchmod(stream.fileno(), mode)
+            os.fsync(stream.fileno())
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)

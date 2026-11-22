@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ydl"
+version = "1.0.0"
+description = "A resumable YouTube-to-MP3 CLI for Linux"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.urls]
+Source = "https://github.com/stef-k/ydl"
+Issues = "https://github.com/stef-k/ydl/issues"
+
+[project.scripts]
+ydl = "ydl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
