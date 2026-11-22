@@ -6,10 +6,12 @@ from dataclasses import replace
 from threading import Event as ThreadEvent
 from unittest.mock import patch
 
+from textual.widgets import TabbedContent, TextArea
+
 from ydl import jobs, runner
 from ydl.models import Result, Settings, YdlError
 from ydl.tui import YdlApp
-from ydl.tui_dialogs import Confirm
+from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
 from ydl.tui_queue import QueueFile
 
 from tui_pilot import PilotCase
@@ -100,6 +102,56 @@ class FeedbackTests(PilotCase):
                     resume.set()
                     await self.ready(pilot, app)
 
+    async def test_add_rechecks_pending_duplicates_after_confirmation(self):
+        first, second = self.entry("A"), self.entry("B")
+        self.disk.save([first, second])
+        draft = f"{first.url}\n{second.url}"
+        app = self.app(prefill=draft)
+
+        async def download(*_args, **_kwargs):
+            await asyncio.Future()
+
+        with patch.object(runner, "download", side_effect=download):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                await pilot.click("#primary")
+                await self.wait_for(pilot, lambda: app.session.active_id == first.id)
+                await self.submit(pilot)
+                await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
+                confirmation = app.screen
+                self.assertIn(second.url, confirmation.question)
+                await pilot.click("#modal-stop")
+                await self.wait_for(pilot, lambda: not app.session.busy)
+                await pilot.click("#cancel")
+                await self.wait_for(pilot, lambda: app.screen is not confirmation and app.screen.ready and
+                                    (not isinstance(app.screen, AddURLs) or not app.screen.saving))
+                self.assertIsInstance(app.screen, Confirm)
+                self.assertIn(first.url, app.screen.question)
+                await pilot.click("#cancel")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, AddURLs) and not app.screen.saving)
+                self.assertEqual(app.screen.query_one(TextArea).text, draft)
+                self.assertEqual([row.url for row in self.disk.read()], [first.url, second.url])
+
+    async def test_settings_focuses_invalid_output_from_backend_tab(self):
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.click("#settings")
+            await self.wait_for(pilot, lambda: isinstance(app.screen, SettingsPanel) and app.screen.ready)
+            output = app.screen.query_one("#settings-output")
+            output.value = ""
+            await pilot.click("#--content-tab-backend-settings")
+            tabs = app.screen.query_one(TabbedContent)
+            self.assertEqual(tabs.active, "backend-settings")
+            await pilot.click("#save-settings")
+            error = app.screen.query_one("#settings-error")
+            await self.wait_for(pilot, lambda: "Output must name a directory" in str(error.render()))
+            await pilot.pause()
+            self.assertEqual(tabs.active, "general")
+            self.assertIs(app.focused, output)
+            self.assertEqual(output.value, "")
+            self.assertFalse(self.paths.config.exists())
+
     async def test_backend_failure_replaces_restored_notice(self):
         self.disk.save([self.entry("A")])
         finish = asyncio.Event()
@@ -113,13 +165,19 @@ class FeedbackTests(PilotCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
             await pilot.pause()
-            self.assertIn("Queue restored", self.screen_text(app))
+            scroll = app.screen.query_one("#notice-scroll")
+            self.assertIn("ℹ Queue restored · 1 Pending · 0 Interrupted", self.screen_text(app))
+            self.assertEqual(scroll.styles.border_left[0], "solid")
+            await pilot.resize_terminal(150, 38)
+            await pilot.pause()
+            self.assertEqual(scroll.styles.border_top[0], "solid")
             finish.set()
             await self.wait_for(pilot, lambda: app.session.backend.check is None)
             await pilot.pause()
             text = self.screen_text(app)
             self.assertIn("Release service returned HTTP 503", text)
             self.assertNotIn("Queue restored", text)
+            self.assertFalse(scroll.has_class("-restored"))
 
     async def test_recovery_notice_scrolls_without_hiding_controls(self):
         self.paths = replace(self.paths, state=self.root / ("a" * 100) / ("b" * 100))

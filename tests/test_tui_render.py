@@ -137,6 +137,7 @@ class RenderTests(PilotCase):
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             queue = app.dashboard.query_one("#queue")
+            self.assertIn("▶ Goa Trance Collection", "\n".join(self.rendered_lines(app)))
             await pilot.resize_terminal(100, 26)
             await self.wait_for(pilot, lambda: len(queue.columns) == 7)
             self.assertEqual([column.key.value for column in queue.ordered_columns],
@@ -149,6 +150,10 @@ class RenderTests(PilotCase):
                 lines = self.rendered_lines(app)
                 active = next(line for line in lines if "Downloading 3/24" in line)
                 complete = next(line for line in lines if "Night City Mix" in line)
+                self.assertIn("▶ Goa Trance Collection", active)
+                self.assertIn("○ Video Yesterday", "\n".join(lines))
+                self.assertIn("✓ Night City Mix", complete)
+                self.assertIn("× Video Unavailable", "\n".join(lines))
                 self.assertIn("61%", active)
                 self.assertIn("━", active)
                 self.assertIn("─", active)
@@ -218,6 +223,7 @@ class RenderTests(PilotCase):
                                 "single", "scope", "ExampleVideo", "ExamplePlaylist")
             task = app.own(app.decide(decision))
             await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
+            await pilot.pause()
             text = "\n".join(self.rendered_lines(app))
             self.assertIn("What do you want to download?", text)
             choices = app.screen.query(RadioButton)
@@ -230,5 +236,5 @@ class RenderTests(PilotCase):
             task = app.own(app.decide(decision))
             await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
             await pilot.press("enter")
-            self.assertTrue(task.done())
+            await self.wait_for(pilot, task.done)
             self.assertEqual(task.result(), "single")

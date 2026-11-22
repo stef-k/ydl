@@ -56,7 +56,10 @@ JobTable > .datatable--header-cursor { background: #1d55a0; }
 #primary { width: 14; }
 #notice-scroll { width: 1fr; height: auto; max-height: 3; scrollbar-size-vertical: 1; }
 #notice-scroll:focus { background: $ydl-input; }
+#notice-scroll.-restored { background: #1c365d; border-left: solid $ydl-outline; border-right: solid $ydl-outline; padding: 0 1; }
+Dashboard.-tall #notice-scroll.-restored { border: solid $ydl-outline; max-height: 5; }
 #notice { height: auto; color: $ydl-muted; }
+#notice-scroll.-restored #notice { color: #b4d9ff; }
 #notice-scroll.-diagnostic #notice { color: #ffba68; }
 #recover { margin-right: 0; }
 

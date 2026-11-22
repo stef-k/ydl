@@ -17,8 +17,16 @@ from .terminal import clean, clean_lines, clip, metrics
 SCOPE_CHOICES = [("Auto", "auto"), ("Single video", "single"), ("Entire playlist", "playlist")]
 STAGES = {"checking": "Checking", "updating": "Updating", "metadata": "Fetching metadata",
           "downloading": "Downloading", "converting": "Converting", "saved": "Saved", "failed": "Failed"}
-STATUS_COLORS = {"Complete": "#49e18b", "Failed": "#ff7c85", "Needs attention": "#ffba68",
-                 "Active": "#71cfff", "Interrupted": "#f2ca76"}
+STATUS_MARKERS = {
+    "Active": ("▶", "#71cfff"),
+    "Pending": ("○", "#a6badc"),
+    "Complete": ("✓", "#49e18b"),
+    "Failed": ("×", "#ff7c85"),
+    "Needs attention": ("!", "#ffba68"),
+    "Interrupted": ("↻", "#f2ca76"),
+    "Verifying": ("◌", "#a6badc"),
+    "Cancelled": ("–", "#a6badc"),
+}
 
 
 def button(label, key, variant="default"):
@@ -260,10 +268,14 @@ class Dashboard(Screen):
         error = index.error or backend.config_error
         action = index.notice or session.notice
         detail = backend.status.detail
-        notice = error or "\n".join(filter(None, (detail, action))) or index.restore_notice
+        notice = error or "\n".join(filter(None, (detail, action)))
+        restored = not notice and bool(index.restore_notice)
+        if restored:
+            notice = f"ℹ {index.restore_notice}"
         text = clean_lines(notice or "Tab navigate · Enter select · Ctrl+C stop · Ctrl+Q quit")
         scroll = self.query_one("#notice-scroll", VerticalScroll)
         scroll.set_class(bool(error or detail), "-diagnostic")
+        scroll.set_class(restored, "-restored")
         scroll.can_focus = bool(notice)
         if text != self.notice_text:
             self.query_one("#notice", Static).update(text)
@@ -278,8 +290,8 @@ class Dashboard(Screen):
             return (("#", "position", 3), ("Title", "title", 14 + extra - progress - output),
                     ("Type", "type", 16), ("Status", "status", 20), ("Track progress", "progress", 14 + progress),
                     ("Output", "output", 14 + output), ("⋮", "actions", 2))
-        return (("#", "position", 3), ("Title", "title", max(9, width - 32)),
-                ("Status", "status", 14), ("⋮", "actions", 2))
+        return (("#", "position", 3), ("Title", "title", max(9, width - 33)),
+                ("Status", "status", 15), ("⋮", "actions", 2))
 
     def row_cells(self, session, row, position, columns):
         view = session.index.view(row.id)
@@ -293,7 +305,7 @@ class Dashboard(Screen):
         percent = 100 if view.status == "Complete" else event.percent if event else None
         values = dict(position=str(position), title=title, type=kind, status=status, output=output,
                       progress="◌" if view.status == "Active" else "—", actions="⋮")
-        return tuple(self.cell(key, values[key], size, percent) for _, key, size in columns)
+        return tuple(self.cell(key, values[key], size, percent, view.status) for _, key, size in columns)
 
     def draw_table(self, session, selected):
         table = self.query_one("#queue", JobTable)
@@ -327,12 +339,15 @@ class Dashboard(Screen):
             table.update_cell(row_id, key, value)
 
     @staticmethod
-    def cell(key, value, size, percent):
+    def cell(key, value, size, percent, state):
         if key == "progress" and percent is not None:
             bar = progress_bar(percent, size - 5)
             bar.append(f" {percent:>3.0f}%")
             return bar
-        style = STATUS_COLORS.get(value, "") if key == "status" else ""
+        marker, color = STATUS_MARKERS[state]
+        if key == "title":
+            return Text.assemble((f"{marker} ", color), clip(clean(value), size - 2), no_wrap=True)
+        style = color if key == "status" else ""
         if key == "actions":
             style = "bold #86cbff"
         return Text(clip(clean(value), size), style=style, no_wrap=True)

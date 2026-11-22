@@ -200,30 +200,31 @@ class AddURLs(Panel):
         self.query_one("#add-error", Static).update(message)
         self.query_one(TextArea).focus()
 
-    async def parse_draft(self, text):
+    def parse_draft(self, lines):
         accepted, rejected = [], []
-        index = self.app.session.index
-        seen = set()
-        for row in index.rows:
-            status = index.view(row.id).status
-            if status == "Pending" or (status == "Verifying" and row.status == "pending"):
-                seen.add(row.url)
-        for line_number, raw in enumerate(text.splitlines(), 1):
-            if not raw.strip() or self.app.session.closing:
+        for line_number, raw in enumerate(lines, 1):
+            if not raw.strip():
                 continue
             try:
                 entry = Entry.from_url(raw.strip(), *self.options)
             except YdlError as exc:
                 rejected.append((line_number, raw, str(exc)))
                 continue
-            if entry.url in seen:
-                dialog = Confirm("Duplicate URL", f"{entry.url} is already pending. Add another entry?", "Add duplicate")
-                if not await self.app.ask(dialog):
-                    rejected.append((line_number, raw, "Duplicate was not added."))
-                    continue
-            seen.add(entry.url)
             accepted.append((line_number, entry))
         return accepted, rejected
+
+    def unconfirmed_duplicate(self, rows, accepted, confirmed):
+        index = self.app.session.index
+        seen = set()
+        for row in rows:
+            status = index.view(row.id).status
+            if status == "Pending" or (status == "Verifying" and row.status == "pending"):
+                seen.add(row.url)
+        for line_number, entry in accepted:
+            if entry.url in seen and line_number not in confirmed:
+                return line_number, entry
+            seen.add(entry.url)
+        return None
 
     async def save_draft(self):
         editor = self.query_one(TextArea)
@@ -234,32 +235,59 @@ class AddURLs(Panel):
         self.saving = True
         self.sync()
         try:
-            accepted, rejected = await self.parse_draft(text)
-            if self.app.session.closing:
-                return
-            if accepted and not await self.commit(text, accepted):
+            lines = text.splitlines()
+            accepted, rejected = self.parse_draft(lines)
+            if not await self.commit(text, lines, accepted, rejected):
                 return
             if not rejected:
                 editor.load_text("")
                 self.app.close_when_current(self, "")
                 return
+            rejected.sort()
             editor.load_text("\n".join(raw for _, raw, _ in rejected))
             self.show_error("\n".join(f"Line {number} · {reason}" for number, _, reason in rejected))
         finally:
             self.saving = False
             self.sync()
 
-    async def commit(self, text, accepted):
+    async def commit(self, text, lines, accepted, rejected):
+        session = self.app.session
+        index = session.index
+        confirmed = set()
+        while accepted and not session.closing:
+            duplicate = None
+
+            def append(rows):
+                nonlocal duplicate
+                if session.closing:
+                    return None
+                duplicate = self.unconfirmed_duplicate(rows, accepted, confirmed)
+                return [*rows, *(entry for _, entry in accepted)] if duplicate is None else None
+
+            if await index.edit(append):
+                index.notice = f"Added {len(accepted)} URL{'s' if len(accepted) != 1 else ''}."
+                return True
+            if duplicate is None:
+                if not session.closing:
+                    self.show_save_error(text, accepted)
+                return False
+            line_number, entry = duplicate
+            dialog = Confirm("Duplicate URL", f"{entry.url} already appears in the queue or draft. Add another entry?",
+                             "Add duplicate")
+            if await self.app.ask(dialog):
+                confirmed.add(line_number)
+            else:
+                accepted.remove(duplicate)
+                rejected.append((line_number, lines[line_number - 1], "Duplicate was not added."))
+        return not session.closing
+
+    def show_save_error(self, text, accepted):
         index = self.app.session.index
-        if await index.edit(lambda rows: [*rows, *(entry for _, entry in accepted)]):
-            index.notice = f"Added {len(accepted)} URL{'s' if len(accepted) != 1 else ''}."
-            return True
         if index.error:
             self.recovery_draft = text, accepted
             self.app.recovery_draft = self.recovery_draft
             self.app.refresh_views()
         self.show_error(clean_lines(index.error or index.notice or "The queue cannot accept changes right now."))
-        return False
 
     def recovered(self, draft):
         self.recovery_draft = None
@@ -414,7 +442,8 @@ class SettingsPanel(Panel):
     async def save_values(self):
         self.saving = True
         self.sync()
-        values = dict(output=self.query_one("#settings-output", Input).value,
+        output = self.query_one("#settings-output", Input)
+        values = dict(output=output.value,
                       quality=self.query_one("#settings-quality", Select).value,
                       keep_video=self.query_one("#settings-video", Checkbox).value,
                       auto_update=self.query_one("#settings-update", Checkbox).value,
@@ -423,6 +452,9 @@ class SettingsPanel(Panel):
             await self.app.session.backend.save(values)
         except (OSError, YdlError) as exc:
             self.query_one("#settings-error", Static).update(clean(str(exc)))
+            if isinstance(exc, config.InvalidOutput):
+                self.query_one(DialogTabs).active = "general"
+                self.call_after_refresh(self.set_focus, output)
         else:
             self.app.close_when_current(self)
         finally:

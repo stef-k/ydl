@@ -51,13 +51,17 @@ def quality_value(value):
     return value.upper()
 
 
+class InvalidOutput(YdlError):
+    """An output preference could not be resolved to a path."""
+
+
 def output_path(value):
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
-        raise YdlError("Output must name a directory.", 2)
+        raise InvalidOutput("Output must name a directory.", 2)
     try:
         return Path(value).expanduser().resolve()
     except (RuntimeError, ValueError) as exc:
-        raise YdlError(f"Invalid output directory: {exc}", 2) from exc
+        raise InvalidOutput(f"Invalid output directory: {exc}", 2) from exc
 
 
 def validate(values):
