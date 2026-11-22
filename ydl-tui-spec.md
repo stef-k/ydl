@@ -1,6 +1,6 @@
 # ydl — Terminal UI (TUI) Design Specification
 
-**Status:** Implementation-ready, iteration 4 — screen and control contract\
+**Status:** Implementation-ready, iteration 5 — mouse and keyboard controls\
 **Target:** Linux terminal, Python 3.11+\
 **Builds on:** [`ydl-cli-spec.md`](ydl-cli-spec.md) and the existing implementation in [`stef-k/ydl`](https://github.com/stef-k/ydl)\
 **Scope:** Add an optional interactive frontend, not a new downloader.
@@ -37,7 +37,7 @@ The current repository already provides useful frontend boundaries:
 - `ydl` without arguments retains its current behavior; do not silently change it to launch the TUI.
 - Require both stdin and stdout to be TTYs and `TERM` to be set to a value other than `dumb`. Fail with a plain-text hint to use `ydl URL` before writing escape sequences. Normal Quit exits `0`, even if queue entries failed. Invalid arguments use the parser's exit `2`.
 
-**Framework choice:** Use [Textual](https://textual.textualize.io/) (MIT) as an **optional** dependency. It already supplies responsive keyboard navigation, async workers, widgets, layout, and terminal-size handling. Do not create a homegrown curses framework or introduce Qt, GTK, Flatpak, Electron, or a persistent service.
+**Framework choice:** Use [Textual](https://textual.textualize.io/) (MIT) as an **optional** dependency. It supplies mouse and keyboard input, async workers, widgets, layout, and terminal-size handling. Do not create a homegrown curses framework or introduce Qt, GTK, Flatpak, Electron, or a persistent service.
 
 Suggested packaging:
 
@@ -52,7 +52,7 @@ From the checkout, install with `pipx install '.[tui]'`. An existing pipx instal
 
 Use one main screen with a fixed dark Textual theme. Show the app name, package version when available, backend status, input form, queue, active transfer and action footer. Put Settings, Add URLs, Browse, Job Details, Recent jobs and Help in separate views opened on demand. `ydl Dark Theme Downloader UI Mockup.png` illustrates these views together. Use terminal cells and readable labels for the layout.
 
-At 80 columns by 24 rows, keep the form, queue, active transfer, Start/Resume or Stop, and keyboard help reachable. The compact queue shows position, title and status. At 100 columns and above, add Type, Track progress and Output columns. A smaller terminal can scroll the form and queue. Keep all secondary columns available in Job Details and allow all actions by keyboard. When a secondary view closes, restore focus to its opener or the queue if the opener is gone.
+At 80 columns by 24 rows, keep the form, queue, active transfer, Start/Resume or Stop, and Help reachable by mouse and keyboard. The compact queue shows position, title, status and the row-action button. At 100 columns and above, add Type, Track progress and Output columns. A smaller terminal can scroll the form and queue. Keep all secondary columns available in Job Details. When a secondary view closes, restore focus to its opener or the queue if the opener is gone.
 
 ```text
 ┌─ ydl ─────────────────────────── Backend: up to date ───────────┐
@@ -221,9 +221,20 @@ Open **Recent jobs** from the footer. Show the 20 most recently created saved jo
 
 Share a read-only inspection boundary for queue reconciliation and the recent-jobs list. Apply the same verification receipts used by retry. The query leaves job state untouched, uses no exclusive claim, and does not create a lock file. A malformed historical record is flagged without preventing fresh downloads.
 
-## 5. Keyboard behavior
+## 5. Mouse and keyboard behavior
 
-Show a Help button in the footer and list these bindings in Help. Apply action eligibility to both button and keyboard activation. Suppress the main-screen shortcuts when a text editor or modal has focus. Tab, Escape, Ctrl+C and Ctrl+Q still work within their defined contexts.
+### Mouse interaction
+
+- Enable Textual's mouse input by default. On a terminal that sends mouse reports, every app action has a clickable control or menu entry, including Help, Recent jobs, Quit, row actions and confirmation choices. Terminals without mouse reporting retain the full keyboard workflow. Mouse and keyboard invoke the same action and eligibility rules.
+- One click on a queue or recent-job row selects it. Double-click its body to open Details. Click the queue row's `⋮` button to select that row and open its action menu. A secondary click on that row opens the same menu when the terminal reports it. Use Move up and Move down in the menu to reorder pending entries.
+- Click settings and detail tabs, dropdowns, checkboxes, and dialog options to select them. In Browse, click a directory row to select it and its disclosure control to expand or collapse it. A confirmation choice is committed by its labeled confirmation button. All secondary views and dialogs have a clickable Close or Cancel action.
+- Support wheel scrolling in the queue, forms, menus, directory chooser, Recent jobs, Help and log view wherever content overflows. Scrollbar thumbs can be dragged wherever scrollbars are displayed. Scrolling leaves the selected row unchanged. Labels and actions remain available without hovering.
+- Keep a clickable **Quit** in the main action area. Any secondary view or dialog that covers that area exposes the same Quit action and, while the queue is armed or running, **Stop queue**. These controls use the shared stop and confirmation flow, including when a runner prompt is open. The Quit confirmation itself offers **Stop and quit** and **Stay**. Mouse Stop from a runner prompt stops the queue. Clicking Cancel on that prompt dismisses only the current attempt.
+- Clicking an editor focuses it for input. Use the terminal's normal paste action to bring external text into the field. Secondary clicks on editable fields are not used for queue actions.
+
+### Keyboard shortcuts
+
+Show a Help button in the footer and list these bindings in Help. Suppress the main-screen shortcuts when a text editor or modal has focus. Tab, Escape, Ctrl+C and Ctrl+Q still work within their defined contexts.
 
 | Key | Action |
 | --- | --- |
@@ -306,7 +317,7 @@ Use Textual Pilot and a fake runner to test the UI. Exercise crash ownership and
 7. **Cancel and quit.** Ctrl+C and confirmed Quit stop work during media processing or while waiting for backend preparation. Pending entries remain intact and the next URL never starts. Declining Quit leaves the prior operation in place. Stop still cancels and settles work if saving the interruption fails.
 8. **Retry and locking.** A locked job remains untouched. Retry failed attempts the Failed rows once and Start/Resume skips them. Retry uses the saved plan when present and the original ID and enqueue options when planning never completed. Recent jobs without queue history show only states the core can establish.
 9. **Errors:** missing dependencies, video unavailability, format errors, and invalid URLs result in readable on-screen diagnostics and accessible logs.
-10. **Terminal sizes.** Operate by keyboard at 80×24 and after resizing. At 100 columns or more show the extra queue columns. On narrower screens retrieve their values from Details. Modals, Settings and Help return focus to the originating control.
+10. **Terminal sizes.** Operate by mouse and keyboard at 80×24 and after resizing. At 100 columns or more show the extra queue columns. On narrower screens retrieve their values from Details. Modals, Settings and Help return focus to the originating control.
 11. **Serial batch.** Add A/B/C and run them in order, with all of B's playlist entries settled before C starts. Pending edits affect the next selection, invalid lines remain editable, and a duplicate within the same paste requires confirmation.
 12. **Queue persistence.** Enqueue A/B/C, reopen from another working directory, and recover their original order and absolute destinations without starting work. Stop during B, reopen again, and show A Complete, B Interrupted, and C Pending. Resume uses B's original job ID before processing C.
 13. **Crash consistency.** Interrupt just before the core plan is saved, just after it is durably saved, and just after work finishes but before the queue result is saved. Restore the expected states and reuse the same job ID. Verify contention during preassigned plan creation, and simulate queue save errors on both sides of replacement. A corrupt or unsupported queue stays intact and unscheduled.
@@ -317,6 +328,7 @@ Use Textual Pilot and a fake runner to test the UI. Exercise crash ownership and
 18. **Packaging.** Install `.[tui]` through pipx and launch the installed command on Linux. Verify the test suite exercised the TUI extra and the tested Textual range in package metadata.
 19. **Actions and shortcuts.** Check the primary Start/Resume/Stop states, selected retry versus batch retry, pending reorder, and index-only removal and clear confirmations. Exercise row menu and shortcuts by keyboard. Typing into the URL editor never fires the single-letter shortcuts.
 20. **Metadata and Details.** The initial scope dialog and unplanned rows render without a YouTube metadata request. Track percentages, position and unknown values render as specified. Details stays tied to the selected job, shows available Info fields, and reads a bounded log with a usable missing-file state.
+21. **Mouse workflow.** Use mouse controls to add a draft, select a row, open Details, scroll a long list, choose an output directory, save Settings, reorder pending rows, confirm removal, start, retry, stop and quit. Verify that the action menu is clickable at 80×24 and that the mouse can stop or quit while a runner modal covers the main screen. Disabled actions enforce the same rules as keyboard shortcuts. Verify the keyboard workflow remains available without mouse reports.
 
 A separate manual smoke test should use the previously troublesome `https://www.youtube.com/watch?v=vvpZOaQz6SM` link to verify that the TUI downloads and produces a playable MP3 through the *same* engine as the CLI. Passing the TUI test alone does not prove YouTube extraction still works.
 
@@ -324,6 +336,6 @@ A separate manual smoke test should use the previously troublesome `https://www.
 
 1. **Reliable foundation.** Durable queue and job handoff, shared process ownership, restore and hard-kill checks, optional entry point, URL/options form, decisions, and one serial runner worker. Persistence and single-writer recovery are required in the first usable build.
 2. **Operational experience.** Structured progress, queue management, cancellation, result and error details, recent-job summaries and retry selection.
-3. **Release validation.** Keyboard-only behavior, terminal sizes, deterministic UI and package tests, documentation, and the live smoke test.
+3. **Release validation.** Mouse and keyboard workflows, terminal sizes, deterministic UI and package tests, documentation, and the live smoke test.
 
 **Definition of done:** Someone unfamiliar with yt-dlp can paste one URL or a list of URLs into `ydl tui`, process them serially into MP3s, make informed playlist choices, reorder the queue, **close and reopen the TUI without losing pending work**, explicitly resume interrupted work, see progress, stop safely, and retry failed items without editing configuration or entering flags—while the original lightweight CLI remains fully compatible.
