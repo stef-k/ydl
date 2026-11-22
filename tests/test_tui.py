@@ -47,7 +47,7 @@ class PilotTests(PilotCase):
             self.assertEqual(reopened.selected, saved[0].id)
             self.assertEqual(reopened.session.index.rows, saved)
             self.assertFalse(reopened.session.busy)
-            self.assertIn("2 Pending", reopened.session.index.notice)
+            self.assertIn("Queue restored · 2 Pending", str(reopened.screen.query_one("#notice").render()))
 
     async def test_serial_attempt_runs_selected_options_and_latest_order(self):
         first, second, third = [self.entry(name) for name in "ABC"]
