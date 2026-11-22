@@ -119,6 +119,7 @@ class JobTable(DataTable):
         actions = column >= 0 and self.ordered_columns[column].key.value == "actions"
         if actions or event.button == 3 or event.chain >= 2:
             self.post_message(self.Open(self, row_id, actions or event.button == 3))
+        event.prevent_default()
         event.stop()
 
 
