@@ -185,6 +185,33 @@ class FeedbackTests(PilotCase):
             self.assertNotIn("Output must name a directory", self.screen_text(app))
             self.assertNotIn("Queue restored", self.screen_text(app))
 
+    async def test_restore_completion_does_not_override_destination_error(self):
+        self.disk.save([self.entry("Queued")])
+        app = self.app(prefill=self.entry("A").url)
+        resume = asyncio.Event()
+        inspect = jobs.inspect_job
+
+        async def verify(*args, **kwargs):
+            await resume.wait()
+            return await inspect(*args, **kwargs)
+
+        with patch.object(jobs, "inspect_job", side_effect=verify):
+            async with app.run_test(size=(80, 24)) as pilot:
+                try:
+                    await self.wait_for(pilot, lambda: "Verifying" in self.screen_text(app))
+                    app.screen.query_one("#destination").value = ""
+                    self.assertTrue(await pilot.click("#add-urls"))
+                    self.assertIn("Output must name a directory", self.screen_text(app))
+                finally:
+                    resume.set()
+                await self.ready(pilot, app)
+                await pilot.pause()
+                self.assertIn("Output must name a directory", self.screen_text(app))
+                self.assertNotIn("Queue restored", self.screen_text(app))
+                await pilot.press("x")
+                self.assertNotIn("Output must name a directory", self.screen_text(app))
+                self.assertNotIn("Queue restored", self.screen_text(app))
+
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()
         file = self.root / "existing\nrecording\u2028test.mp3"

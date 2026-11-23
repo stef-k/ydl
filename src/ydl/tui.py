@@ -208,9 +208,8 @@ class YdlApp(App[int]):
         index = self.session.index
         if not index.editable or self.session.backend.config_error:
             return
-        if index.restore_notice:
-            index.restore_notice = ""
-            self.dashboard.update_notice(self.session)
+        index.dismiss_restore_notice()
+        self.dashboard.update_notice(self.session)
         draft = self.dashboard.query_one("#draft", TextArea)
         field = self.dashboard.query_one("#destination", Input)
         try:

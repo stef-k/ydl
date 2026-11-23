@@ -147,9 +147,15 @@ class QueueIndex:
         self.error = ""
         self.notice = ""
         self.restore_notice = ""
+        self._restore_notice_dismissed = False
 
     def clear_notice(self):
         self.notice = self.restore_notice = ""
+
+    def dismiss_restore_notice(self):
+        """Dismiss the notice even if startup verification is still running."""
+        self.restore_notice = ""
+        self._restore_notice_dismissed = True
 
     def row(self, row_id):
         return next((entry for entry in self.rows if entry.id == row_id), None)
@@ -170,7 +176,7 @@ class QueueIndex:
         if not self.admitted:
             return
         on_admitted()
-        if await self.recheck() and rows is not None:
+        if await self.recheck() and rows is not None and not self._restore_notice_dismissed:
             pending = sum(self.view(row.id).status == "Pending" for row in self.rows)
             interrupted = sum(self.view(row.id).status == "Interrupted" for row in self.rows)
             self.restore_notice = f"Queue restored · {pending} Pending · {interrupted} Interrupted"
