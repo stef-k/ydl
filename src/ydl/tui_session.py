@@ -25,8 +25,8 @@ class QueueSession:
         self.active_id = None
         self.events = {}
         self.plans = {}
-        self.results = {}
         self.external = {}
+        self.external_results = {}
         self.notice = ""
 
     def index_changed(self):
@@ -38,7 +38,7 @@ class QueueSession:
         if self.backend.config_error:
             self.armed = False
         if self.backend.config_error or self.backend.status.detail:
-            self.index.restore_notice = ""
+            self.index.dismiss_restore_notice()
         self.changed(defaults=defaults)
 
     async def open(self):
@@ -88,7 +88,7 @@ class QueueSession:
         if not self.can_retry_backend:
             return
         if await self.backend.read() and self.can_retry_backend:
-            self.index.restore_notice = ""
+            self.index.dismiss_restore_notice()
             self.backend.start_check()
 
     def selected_retry(self, row_id):
@@ -180,7 +180,7 @@ class QueueSession:
             return None
         self.active_id = row_id
         self.events[row_id] = Event("checking", "Preparing download")
-        self.results.pop(row_id, None)
+        self.external_results.pop(row_id, None)
         self.changed()
         args = dict(emit=lambda event: self.record(row_id, event), decide=self.decide, backend_ready=True)
         if planned:
@@ -199,8 +199,8 @@ class QueueSession:
                 settled, display = await self.entry_error(entry, view, exc)
         else:
             if result is not None:
-                self.results[entry.id] = result
                 settled, display = await self.entry_result(entry, result)
+                display = replace(display, result=result)
         finally:
             self.operation = None
         await self.index.settle(settled, display)
@@ -273,7 +273,7 @@ class QueueSession:
         try:
             result = await self.operation
             if result is not None:
-                self.results[row_id] = result
+                self.external_results[row_id] = result
         except (OSError, TimeoutError, YdlError, asyncio.CancelledError) as exc:
             if self.active_id == row_id:
                 self.notice = str(exc) or "Download stopped."

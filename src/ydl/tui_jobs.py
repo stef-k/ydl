@@ -92,6 +92,7 @@ class RecentJobs(Panel):
         self.selected = self.ids[0] if self.ids else None
         for row_id in self.ids:
             session.external[row_id] = None
+            session.external_results.pop(row_id, None)
             table.add_row(row_id, "Verifying", key=row_id)
         self.sync()
         await asyncio.gather(*(self.verify(session, row_id) for row_id in self.ids))
@@ -243,7 +244,7 @@ class Details(Panel):
         title = row_metadata(entry, view, plan)[0] if entry else job_title(job) if job else row_id
         self.query_one(".dialog-title", Static).update(f"Job Details — {clean(title)}")
         status = job_status(session, row_id)
-        result = session.results.get(row_id)
+        result = view.result if entry else session.external_results.get(row_id)
         diagnostic = self.diagnostic(entry, view, inspected, result)
         retry = self.query_one("#details-retry", Button)
         retry.label = "Retry selected entry" if entry else "Retry selected job"
@@ -270,11 +271,12 @@ class Details(Panel):
         fields = [("Status", status)]
         if status == "Active":
             fields = active_progress(event)
-        elif result:
-            fields.extend((("Saved", str(result.saved)), ("Failed", str(result.failed))))
-        elif inspected and inspected.job:
-            fields.extend((("Verified", f"{inspected.verified}/{len(inspected.job.items)}"),
-                           ("Track progress", "100%" if status == "Complete" else DASH)))
+        else:
+            if inspected and inspected.job:
+                fields.extend((("Verified", f"{inspected.verified}/{len(inspected.job.items)}"),
+                               ("Track progress", "100%" if status == "Complete" else DASH)))
+            if result:
+                fields.extend((("Saved", str(result.saved)), ("Failed", str(result.failed))))
         output = ((inspected.output if inspected else None) or (result.destination if result else None)
                   or (settings.destination if settings else None))
         if output:

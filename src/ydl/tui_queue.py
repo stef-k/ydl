@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from . import config, jobs, media
-from .models import YdlError
+from .models import Result, YdlError
 from .process import inherit_lock
 
 STARTABLE = {"Pending", "Interrupted"}
@@ -98,6 +98,7 @@ class View:
     status: str
     inspection: jobs.Inspection | None = None
     diagnostic: str = ""
+    result: Result | None = None
 
     @property
     def planned(self):
@@ -150,7 +151,8 @@ class QueueIndex:
         self._restore_notice_dismissed = False
 
     def clear_notice(self):
-        self.notice = self.restore_notice = ""
+        self.notice = ""
+        self.dismiss_restore_notice()
 
     def dismiss_restore_notice(self):
         """Dismiss the notice even if startup verification is still running."""
@@ -176,7 +178,7 @@ class QueueIndex:
         if not self.admitted:
             return
         on_admitted()
-        if await self.recheck() and rows is not None and not self._restore_notice_dismissed:
+        if await self.recheck(startup=True) and rows is not None and not self._restore_notice_dismissed:
             pending = sum(self.view(row.id).status == "Pending" for row in self.rows)
             interrupted = sum(self.view(row.id).status == "Interrupted" for row in self.rows)
             self.restore_notice = f"Queue restored · {pending} Pending · {interrupted} Interrupted"
@@ -233,10 +235,11 @@ class QueueIndex:
             self.changed()
             return True
 
-    async def recheck(self, row_id=None):
+    async def recheck(self, row_id=None, *, startup=False):
         targets = [row for row in self.rows if row_id is None or row.id == row_id]
         self.verifying = True
-        self.clear_notice()
+        if not startup:
+            self.clear_notice()
         self.views.update({row.id: View("Verifying") for row in targets})
         self.changed()
         try:

@@ -12,6 +12,7 @@ from ydl import config, jobs, runner
 from ydl.models import Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
+from ydl.tui_jobs import Details, RowMenu
 from ydl.tui_queue import QueueFile
 
 from tui_pilot import PilotCase
@@ -211,6 +212,95 @@ class FeedbackTests(PilotCase):
                 await pilot.press("x")
                 self.assertNotIn("Output must name a directory", self.screen_text(app))
                 self.assertNotIn("Queue restored", self.screen_text(app))
+
+    async def test_restore_completion_does_not_reinstate_notice_after_removal(self):
+        removed, remaining = self.entry("Removed"), self.entry("Remaining")
+        self.disk.save([removed, remaining])
+        app = self.app()
+        resume = asyncio.Event()
+        inspect = jobs.inspect_job
+
+        async def verify(*args, **kwargs):
+            await resume.wait()
+            return await inspect(*args, **kwargs)
+
+        with patch.object(jobs, "inspect_job", side_effect=verify):
+            async with app.run_test(size=(80, 24)) as pilot:
+                try:
+                    await self.wait_for(pilot, lambda: "Verifying" in self.screen_text(app))
+                    app.dashboard.query_one("#queue").focus()
+                    await pilot.press("delete")
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
+                    self.assertTrue(await pilot.click("#confirm"))
+                    await self.wait_for(pilot, lambda: app.session.index.rows == [remaining])
+                    self.assertEqual(self.disk.read(), [remaining])
+                finally:
+                    resume.set()
+                await self.ready(pilot, app)
+                await pilot.pause()
+                self.assertNotIn("Queue restored", self.screen_text(app))
+
+    async def test_repairing_startup_config_does_not_reveal_restore_notice(self):
+        self.paths.config.write_text("quality = [")
+        self.disk.save([self.entry("Queued")])
+        app = self.app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.pause()
+            self.assertIn("Configuration error", self.screen_text(app))
+            self.assertTrue(await pilot.click("#settings"))
+            await self.wait_for(pilot, lambda: isinstance(app.screen, SettingsPanel) and app.screen.ready)
+            app.screen.query_one("#settings-output").value = str(self.output)
+            self.assertTrue(await pilot.click("#save-settings"))
+            await self.wait_for(pilot, lambda: app.screen is app.dashboard)
+            await pilot.pause()
+            text = self.screen_text(app)
+            self.assertIn("Check pending", text)
+            self.assertNotIn("Configuration error", text)
+            self.assertNotIn("Queue restored", text)
+
+    async def test_details_shows_current_verified_count_after_recheck(self):
+        row = self.entry("A")
+        self.disk.save([row])
+        store = jobs.JobStore(self.paths.state)
+        item = jobs.make_item(1, "A", "Track", False)
+        mp3 = self.output / f"{item.stem}.mp3"
+        content = b"saved MP3"
+        item.outputs["mp3"] = {"name": mp3.name, "sha256": hashlib.sha256(content).hexdigest()}
+
+        async def download(*args, **kwargs):
+            mp3.write_bytes(content)
+            with store.claim(row.id, new=True):
+                job = jobs.Job.create(row.id, Settings("single", "0", False, self.output), [item],
+                                      enqueued_base=row.output)
+                store.save(job)
+            return Result(self.output, saved=1, job_id=row.id)
+
+        app = self.app()
+        with patch.object(runner, "download", side_effect=download):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await self.ready(pilot, app)
+                self.assertTrue(await pilot.click("#primary"))
+                await self.wait_for(pilot, lambda: app.session.index.view(row.id).status == "Complete"
+                                    and not app.session.busy)
+                app.dashboard.query_one("#queue").focus()
+                await pilot.press("enter")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
+                self.assertRegex(self.screen_text(app), r"Saved +1")
+                await pilot.press("escape")
+
+                mp3.unlink()
+                await pilot.press("f2")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, RowMenu) and app.screen.ready)
+                self.assertTrue(await pilot.click("#recheck"))
+                await self.wait_for(pilot, lambda: app.session.index.view(row.id).status == "Interrupted")
+                await self.ready(pilot, app)
+                await pilot.press("enter")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
+                text = self.screen_text(app)
+                self.assertRegex(text, r"Status +Interrupted")
+                self.assertRegex(text, r"Verified +0/1")
+                self.assertNotRegex(text, r"Saved +1")
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()
