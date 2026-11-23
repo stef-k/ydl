@@ -265,6 +265,7 @@ class Dashboard(Screen):
         self.query_one("#clear-completed", Button).disabled = not (index.editable and not session.busy and
                                                                   any(index.view(row.id).status == "Complete" for row in index.rows))
         self.query_one("#add-urls", Button).disabled = not index.editable or bool(session.backend.config_error)
+        self.query_one("#recent", Button).disabled = not (index.admitted or index.error)
         retry = self.query_one("#retry-backend", Button)
         retry.display = bool(session.backend_retry_visible)
         retry.disabled = not session.can_retry_backend

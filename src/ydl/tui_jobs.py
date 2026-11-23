@@ -90,30 +90,37 @@ class RecentJobs(Panel):
         self.is_loading = False
         table = self.query_one(JobTable)
         self.selected = self.ids[0] if self.ids else None
+        refresh = {}
         for row_id in self.ids:
-            session.external[row_id] = None
-            session.external_results.pop(row_id, None)
             table.add_row(row_id, "Verifying", key=row_id)
+            if session.index.row(row_id) is not None or session.external_retry_id == row_id:
+                continue
+            # A verification can outlive the panel that requested it.
+            if row_id in session.external and session.external[row_id] is None:
+                continue
+            refresh[row_id] = session.external.get(row_id)
+            session.external[row_id] = None
         self.sync()
-        await asyncio.gather(*(self.verify(session, row_id) for row_id in self.ids))
+        await asyncio.gather(*(self.verify(session, row_id, previous) for row_id, previous in refresh.items()))
 
-    async def verify(self, session, row_id):
+    async def verify(self, session, row_id, previous):
         result = await session.inspect(row_id)
-        if session.active_id != row_id:
-            session.external[row_id] = result
-        if self.is_mounted:
-            self.sync()
+        if result != previous:
+            session.external_results.pop(row_id, None)
+        session.external[row_id] = result
+        session.changed()
 
     def row_info(self, row_id):
         session = self.app.session
         entry = session.index.row(row_id)
-        report = session.external.get(row_id)
-        job = report.job if report else None
-        title = job_title(job) if job else row_id
+        status = job_status(session, row_id)
         if entry:
             view = session.index.view(row_id)
             title, _, _ = row_metadata(entry, view, session.plans.get(row_id))
-        status = job_status(session, row_id)
+            return title, status, view.diagnostic
+        report = session.external.get(row_id)
+        job = report.job if report else None
+        title = job_title(job) if job else row_id
         return title, status, report.diagnostic if report else ""
 
     def sync(self):
@@ -236,15 +243,19 @@ class Details(Panel):
         super().sync()
         session, row_id = self.app.session, self.row_id
         entry = session.index.row(row_id)
-        view = session.index.view(row_id) if entry else None
-        inspected = view.inspection if entry else session.external.get(row_id)
+        if entry:
+            view = session.index.view(row_id)
+            inspected, result = view.inspection, view.result
+        else:
+            view = None
+            inspected = session.external.get(row_id)
+            result = session.external_results.get(row_id) if inspected else None
         job = inspected.job if inspected else None
         plan = session.plans.get(row_id)
         settings = job.settings if job else plan.settings if plan else None
         title = row_metadata(entry, view, plan)[0] if entry else job_title(job) if job else row_id
         self.query_one(".dialog-title", Static).update(f"Job Details — {clean(title)}")
         status = job_status(session, row_id)
-        result = view.result if entry else session.external_results.get(row_id)
         diagnostic = self.diagnostic(entry, view, inspected, result)
         retry = self.query_one("#details-retry", Button)
         retry.label = "Retry selected entry" if entry else "Retry selected job"
@@ -284,7 +295,7 @@ class Details(Panel):
         if settings:
             quality = f"VBR {settings.quality}" if len(settings.quality) == 1 else settings.quality
             fields.extend((("MP3 quality", quality), ("Keep video", "Yes" if settings.keep_video else "No")))
-        if diagnostic:
+        if diagnostic and status not in ("Active", "Verifying", "Complete"):
             fields.append(("Diagnostic", Text(clean_lines(diagnostic), style="#ffba68")))
         grid = Table.grid(padding=(0, 1), pad_edge=False)
         grid.add_column(width=14, style="#c6ddff")
@@ -296,7 +307,7 @@ class Details(Panel):
     def info_text(self, entry, inspected, job, plan, settings, diagnostic):
         values = dict.fromkeys(("Reserved queue ID", "Core job ID", "Canonical URL", "Requested scope", "Type",
                                 "Resolved scope", "MP3 quality", "Keep video", "Enqueued base", "Resolved output"))
-        values["Diagnostic"] = diagnostic
+        values["Last diagnostic"] = diagnostic
         if entry:
             _, kind, _ = row_metadata(entry, self.app.session.index.view(entry.id), plan)
             values.update({"Reserved queue ID": entry.id, "Canonical URL": entry.url,

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from textual.widgets import TabbedContent, TextArea
 
 from ydl import config, jobs, runner
-from ydl.models import Result, Settings, YdlError
+from ydl.models import Event, Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
@@ -268,12 +268,13 @@ class FeedbackTests(PilotCase):
         content = b"saved MP3"
         item.outputs["mp3"] = {"name": mp3.name, "sha256": hashlib.sha256(content).hexdigest()}
 
-        async def download(*args, **kwargs):
+        async def download(*args, emit, **kwargs):
             mp3.write_bytes(content)
             with store.claim(row.id, new=True):
                 job = jobs.Job.create(row.id, Settings("single", "0", False, self.output), [item],
                                       enqueued_base=row.output)
                 store.save(job)
+            emit(Event("settings", title=item.title, settings=job.settings, total=1))
             return Result(self.output, saved=1, job_id=row.id)
 
         app = self.app()
@@ -301,6 +302,54 @@ class FeedbackTests(PilotCase):
                 self.assertRegex(text, r"Status +Interrupted")
                 self.assertRegex(text, r"Verified +0/1")
                 self.assertNotRegex(text, r"Saved +1")
+
+                await pilot.press("escape")
+                store.path(row.id).unlink()
+                await pilot.press("f2")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, RowMenu) and app.screen.ready)
+                self.assertTrue(await pilot.click("#recheck"))
+                await self.ready(pilot, app)
+                await pilot.press("enter")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
+                self.assertTrue(await pilot.click("#--content-tab-info-pane"))
+                text = self.screen_text(app)
+                self.assertIn("Missing saved plan", text)
+                self.assertRegex(text, r"Core job ID +—")
+                self.assertRegex(text, r"Resolved scope +—")
+                self.assertRegex(text, r"Resolved output +—")
+
+    async def test_recheck_shows_resolved_collision_only_in_history(self):
+        diagnostic = "Refusing to overwrite an existing output"
+        row = replace(self.entry("A"), status="failed", diagnostic=diagnostic)
+        self.disk.save([row])
+        store = jobs.JobStore(self.paths.state)
+        item = jobs.make_item(1, "A", "Track", False)
+        mp3 = self.output / f"{item.stem}.mp3"
+        content = b"saved MP3"
+        mp3.write_bytes(b"occupied")
+        item.outputs["mp3"] = {"name": mp3.name, "sha256": hashlib.sha256(content).hexdigest()}
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, Settings("single", "0", False, self.output), [item],
+                                      enqueued_base=row.output))
+
+        app = self.app()
+        async with app.run_test(size=(150, 35)) as pilot:
+            await self.ready(pilot, app)
+            self.assertEqual(app.session.index.view(row.id).status, "Needs attention")
+            mp3.write_bytes(content)
+            app.dashboard.query_one("#queue").focus()
+            await pilot.press("f2")
+            await self.wait_for(pilot, lambda: isinstance(app.screen, RowMenu) and app.screen.ready)
+            self.assertTrue(await pilot.click("#recheck"))
+            await self.ready(pilot, app)
+            await pilot.press("enter")
+            await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
+            text = self.screen_text(app)
+            self.assertRegex(text, r"Status +Complete")
+            self.assertRegex(text, r"Verified +1/1")
+            self.assertNotIn(diagnostic, text)
+            self.assertTrue(await pilot.click("#--content-tab-info-pane"))
+            self.assertIn(f"Last diagnostic  {diagnostic}", self.screen_text(app))
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()

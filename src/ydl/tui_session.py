@@ -27,6 +27,7 @@ class QueueSession:
         self.plans = {}
         self.external = {}
         self.external_results = {}
+        self.external_retry_id = None
         self.notice = ""
 
     def index_changed(self):
@@ -112,6 +113,7 @@ class QueueSession:
         if not allowed or not targets:
             return
         self.armed = True
+        self.external_retry_id = row_id if mode == "external" else None
         self.notice = ""
         self.index.clear_notice()
         self.serial = asyncio.create_task(self.run_action(mode, targets))
@@ -164,6 +166,7 @@ class QueueSession:
                 await self.run_entry(mode, entry, view, current)
         finally:
             self.armed = False
+            self.external_retry_id = None
             self.serial = None
             self.changed()
 
@@ -204,6 +207,7 @@ class QueueSession:
         finally:
             self.operation = None
         await self.index.settle(settled, display)
+        self.plans.pop(entry.id, None)
         self.active_id = None
         self.changed()
 
@@ -281,6 +285,7 @@ class QueueSession:
             self.operation = None
             if self.active_id == row_id:
                 self.external[row_id] = await self.inspect(row_id)
+                self.plans.pop(row_id, None)
                 self.active_id = None
                 self.changed()
 
