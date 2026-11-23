@@ -159,8 +159,24 @@ class FeedbackTests(PilotCase):
             self.assertEqual(app.screen.query_one(TextArea).text, draft)
             self.assertIs(app.focused, app.screen.query_one(TextArea))
             self.assertTrue(app.screen.query_one("#submit-add").disabled)
-            error = str(app.screen.query_one("#add-error").render())
-            self.assertIn(f"Configuration error at {self.paths.config}", error)
+            await pilot.pause()
+            error = app.screen.query_one("#add-error").region
+            dialog_lines = self.rendered_lines(app)[error.y:error.bottom]
+            self.assertIn(f"Configuration error at {self.paths.config}", "\n".join(dialog_lines))
+
+    async def test_invalid_destination_shows_inline_error_and_keeps_draft(self):
+        draft = self.entry("A").url
+        app = self.app(prefill=draft)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            destination = app.screen.query_one("#destination")
+            destination.value = ""
+            await pilot.click("#add-urls")
+            await pilot.pause()
+            self.assertIs(app.screen, app.dashboard)
+            self.assertIs(app.focused, destination)
+            self.assertEqual(app.screen.query_one("#draft", TextArea).text, draft)
+            self.assertIn("Output must name a directory", self.screen_text(app))
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()
@@ -174,7 +190,7 @@ class FeedbackTests(PilotCase):
             output = settings.query_one("#settings-output")
             tabs = settings.query_one(TabbedContent)
             error = settings.query_one("#settings-error")
-            cases = [("", "Output must name a directory"), (str(file), "expected a readable real directory")]
+            cases = [("", "Output must name a directory"), (str(file), "Cannot use destination")]
             for value, message in cases:
                 output.value = value
                 await pilot.click("#--content-tab-backend-settings")
@@ -183,7 +199,7 @@ class FeedbackTests(PilotCase):
                 await self.wait_for(pilot, lambda: app.screen is not settings or message in str(error.render()))
                 await pilot.pause()
                 self.assertIs(app.screen, settings, value)
-                self.assertIn(message, str(error.render()))
+                self.assertIn(message, self.screen_text(app))
                 self.assertEqual(tabs.active, "general")
                 self.assertIs(app.focused, output)
                 self.assertEqual(output.value, value)
@@ -243,7 +259,3 @@ class FeedbackTests(PilotCase):
             await pilot.press("up")
             await pilot.pause()
             self.assertIn("tui-queue.json", self.screen_text(app))
-
-    @staticmethod
-    def screen_text(app):
-        return "\n".join(strip.text for strip in app.screen._compositor.render_strips())

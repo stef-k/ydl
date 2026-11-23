@@ -59,10 +59,6 @@ class RenderTests(PilotCase):
                     stopped.set()
                     await self.wait_for(pilot, lambda: not app.session.busy)
 
-    @staticmethod
-    def rendered_lines(app):
-        return [strip.text for strip in app.screen._compositor.render_strips()]
-
     async def test_download_options_remain_visible_and_clickable_after_narrow_resize(self):
         self.disk.save([self.entry("A")])
         app = self.app()
@@ -144,6 +140,11 @@ class RenderTests(PilotCase):
             self.assertIn("Start queue", text)
             self.assertIn("Help", text)
             self.assertIn("Queue restored · 30 Pending · 0 Interrupted", text)
+            queue = app.dashboard.query_one("#queue")
+            queue.focus()
+            await pilot.press("ctrl+end")
+            await pilot.pause()
+            self.assertIn("Video 29", self.screen_text(app))
             self.assertTrue(await pilot.click("#help"))
 
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
@@ -152,6 +153,7 @@ class RenderTests(PilotCase):
             self.assertIn("▶ Goa Trance Collection", "\n".join(self.rendered_lines(app)))
             await pilot.resize_terminal(100, 26)
             await self.wait_for(pilot, lambda: len(queue.columns) == 7)
+            self.assertEqual(queue.region.height, queue.header_height + queue.row_count)
             self.assertEqual([column.key.value for column in queue.ordered_columns],
                              ["position", "title", "type", "status", "progress", "output", "actions"])
             for width, height in ((150, 38), (220, 55)):
@@ -162,10 +164,10 @@ class RenderTests(PilotCase):
                 lines = self.rendered_lines(app)
                 active = next(line for line in lines if "Downloading 3/24" in line)
                 complete = next(line for line in lines if "Night City Mix" in line)
+                last_row = next(number for number, line in enumerate(lines) if "× Video Unavailable" in line)
                 self.assertIn("▶ Goa Trance Collection", active)
                 self.assertIn("○ Video Yesterday", "\n".join(lines))
                 self.assertIn("✓ Night City Mix", complete)
-                self.assertIn("× Video Unavailable", "\n".join(lines))
                 self.assertIn("61%", active)
                 self.assertIn("━", active)
                 self.assertIn("─", active)
@@ -177,7 +179,7 @@ class RenderTests(PilotCase):
                     self.assertNotIn("%", next(line for line in lines if key in line))
                 transfer = app.dashboard.query_one("#transfer-panel")
                 controls = app.dashboard.query_one("#controls")
-                self.assertLessEqual(transfer.region.y - queue.region.bottom, 2)
+                self.assertLessEqual(transfer.region.y - last_row, 3)
                 self.assertLessEqual(controls.region.y - transfer.region.bottom, 1)
             emit(replace(event, position=100, total=120))
             await pilot.resize_terminal(100, 24)

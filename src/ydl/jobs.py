@@ -116,20 +116,20 @@ def local_directory(path, *, create=True):
     return path
 
 
-def safe_destination(path):
-    """Check an enqueued absolute path without resolving redirects."""
+def safe_destination(path, *, remedy="Restore the folder and Recheck."):
+    """Check an absolute destination path without resolving redirects."""
     if not path.is_absolute() or ".." in path.parts:
-        raise DestinationChanged(f"Invalid saved destination: {path}. Restore the folder and Recheck.")
+        raise DestinationChanged(f"Invalid saved destination: {path}. {remedy}")
     for folder in (*reversed(path.parents), path):
         try:
             info = folder.lstat()
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise DestinationChanged(f"Cannot access destination {path}: {exc}. Restore the folder and Recheck.") from exc
+            raise DestinationChanged(f"Cannot access destination {path}: {exc}. {remedy}") from exc
         if not stat.S_ISDIR(info.st_mode) or not os.access(folder, os.R_OK | os.X_OK):
             raise DestinationChanged(f"Cannot use destination {path}: expected a readable real directory at {folder}. "
-                                     "Restore the folder and Recheck.")
+                                     f"{remedy}")
     return info.st_dev, info.st_ino
 
 

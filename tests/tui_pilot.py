@@ -36,6 +36,13 @@ class PilotCase(unittest.IsolatedAsyncioTestCase):
     def app(self, prefill=None):
         return YdlApp(self.paths, prefill, self.disk)
 
+    @staticmethod
+    def rendered_lines(app):
+        return [strip.text for strip in app.screen._compositor.render_strips()]
+
+    def screen_text(self, app):
+        return "\n".join(self.rendered_lines(app))
+
     async def wait_for(self, pilot, predicate):
         async with asyncio.timeout(5):
             while not predicate():

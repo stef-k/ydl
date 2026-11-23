@@ -48,6 +48,16 @@ def label(text, width=None):
     return Label(text, markup=False, classes=width)
 
 
+class FormError(Static):
+    def __init__(self, identifier):
+        super().__init__("", id=identifier, markup=False)
+        self.display = False
+
+    def set_message(self, message):
+        self.update(message)
+        self.display = bool(message)
+
+
 def format_backend(status):
     version_text = f" (yt-dlp {status.version})" if status.version else ""
     return f"Backend · {status.state}{version_text}"
@@ -183,32 +193,33 @@ class Dashboard(Screen):
                         yield label("Save to", "field-label")
                         yield Input(id="destination", compact=True)
                         yield button("Browse", "browse")
-                yield Static("", id="form-error", markup=False)
+                yield FormError("form-error")
             with Vertical(id="queue-panel", classes="panel"):
                 yield Static("Queue · 0 URLs", id="queue-summary", markup=False)
                 yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
                                cursor_foreground_priority="renderable")
-        with Vertical(id="action-area"):
-            with Vertical(id="transfer-panel", classes="panel"):
-                yield Static("Active transfer", id="transfer-title", classes="section-title", markup=False)
-                yield Static("No active transfer", id="transfer")
-            with Horizontal(id="controls"):
-                yield button("Start queue", "primary", "primary")
-                yield button("Retry failed", "retry-failed")
-                yield button("Clear completed", "clear-completed")
-                yield button("Recent jobs", "recent")
-                yield button("Help", "help")
-                yield button("Quit", "quit")
-            with Horizontal(id="status-line"):
-                with VerticalScroll(id="notice-scroll"):
-                    yield Static("", id="notice", markup=False)
-                yield button("Recover queue", "recover", "warning")
+            with Vertical(id="action-area"):
+                with Vertical(id="transfer-panel", classes="panel"):
+                    yield Static("Active transfer", id="transfer-title", classes="section-title", markup=False)
+                    yield Static("No active transfer", id="transfer")
+                with Horizontal(id="controls"):
+                    yield button("Start queue", "primary", "primary")
+                    yield button("Retry failed", "retry-failed")
+                    yield button("Clear completed", "clear-completed")
+                    yield button("Recent jobs", "recent")
+                    yield button("Help", "help")
+                    yield button("Quit", "quit")
+                with Horizontal(id="status-line"):
+                    with VerticalScroll(id="notice-scroll"):
+                        yield Static("", id="notice", markup=False)
+                    yield button("Recover queue", "recover", "warning")
 
     def on_mount(self):
         self.app.call_after_refresh(self.app.startup, self)
 
     def on_resize(self, event):
         self.set_class(event.size.width >= 120, "-inline-destination")
+        self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.app.refresh_views)
 
     @on(Button.Pressed)
@@ -310,6 +321,11 @@ class Dashboard(Screen):
     def draw_table(self, session, selected):
         table = self.query_one("#queue", JobTable)
         rows = session.index.rows
+        panel = self.query_one("#queue-panel", Vertical)
+        # The wide queue uses the available space up to its last row.
+        # Its height includes the table header, one summary line, and panel borders.
+        content_height = max(2, len(rows)) + table.header_height + 1 + panel.styles.gutter.height
+        panel.styles.max_height = content_height if self.has_class("-wide", "-standard-height") else None
         columns = self.columns(self.size.width or 80)
         cells = tuple((row.id, self.row_cells(session, row, i, columns)) for i, row in enumerate(rows, 1))
         previous = tuple(row_id for row_id, _ in self.rendered)

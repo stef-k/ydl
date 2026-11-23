@@ -14,7 +14,7 @@ from . import config
 from .models import YdlError
 from .terminal import clean, clean_lines
 from .tui_queue import Entry
-from .tui_widgets import button, format_backend, quality_options, select
+from .tui_widgets import FormError, button, format_backend, quality_options, select
 
 
 class Panel(ModalScreen):
@@ -163,8 +163,8 @@ class AddURLs(Panel):
                      f"Save to {clean(output)}", markup=False)
         yield TextArea(self.original, id="batch-draft", placeholder="Paste YouTube URLs · one per line",
                        compact=True, soft_wrap=False, tab_behavior="focus")
-        yield Static("", id="add-error", markup=False)
-        yield Static("", id="add-storage", markup=False)
+        yield FormError("add-error")
+        yield FormError("add-storage")
 
     def buttons(self):
         yield button("Cancel", "cancel")
@@ -175,7 +175,7 @@ class AddURLs(Panel):
         super().sync()
         session = self.app.session
         error = session.index.error
-        self.query_one("#add-storage", Static).update(clean_lines(error))
+        self.query_one("#add-storage", FormError).set_message(clean_lines(error))
         recover = self.query_one("#add-recover", Button)
         recover.display = bool(error)
         recover.disabled = not session.can_recover
@@ -197,7 +197,7 @@ class AddURLs(Panel):
         self.app.own(self.app.recover_queue())
 
     def show_error(self, message):
-        self.query_one("#add-error", Static).update(message)
+        self.query_one("#add-error", FormError).set_message(message)
         self.query_one(TextArea).focus()
 
     def parse_draft(self, lines):
@@ -288,7 +288,9 @@ class AddURLs(Panel):
             self.recovery_draft = text, accepted
             self.app.recovery_draft = self.recovery_draft
             self.app.refresh_views()
-        message = index.error or session.backend.config_error or index.notice
+            self.show_error("")
+            return
+        message = session.backend.config_error or index.notice
         self.show_error(clean_lines(message or "The queue cannot accept changes right now."))
 
     def recovered(self, draft):
@@ -339,7 +341,7 @@ class Browse(Panel):
         tree = Folders(self.root, id="folders")
         tree.auto_expand = False
         yield tree
-        yield Static("", id="browse-error", markup=False)
+        yield FormError("browse-error")
 
     def buttons(self):
         yield button("Parent folder", "parent")
@@ -361,7 +363,8 @@ class Browse(Panel):
             if not readable_folder(path):
                 raise OSError("Traversal is not permitted")
         except OSError as exc:
-            self.query_one("#browse-error", Static).update(clean(f"Cannot open {path}: {exc} · Enter the path directly."))
+            self.query_one("#browse-error", FormError).set_message(
+                clean(f"Cannot open {path}: {exc} · Enter the path directly."))
             return
         self.dismiss(str(path))
 
@@ -408,7 +411,7 @@ class SettingsPanel(Panel):
                     yield select([("Nightly", "nightly"), ("Stable", "stable")], prefs.channel, "settings-channel")
                 yield Static("", id="settings-backend-status", markup=False)
                 yield button("Retry backend", "settings-retry-backend")
-        yield Static("", id="settings-error", markup=False)
+        yield FormError("settings-error")
 
     def buttons(self):
         yield button("Cancel", "cancel")
@@ -453,7 +456,7 @@ class SettingsPanel(Panel):
         try:
             await self.app.session.backend.save(values)
         except (OSError, YdlError) as exc:
-            self.query_one("#settings-error", Static).update(clean(str(exc)))
+            self.query_one("#settings-error", FormError).set_message(clean(str(exc)))
             if isinstance(exc, config.InvalidOutput):
                 self.query_one(DialogTabs).active = "general"
                 self.call_after_refresh(self.set_focus, output)

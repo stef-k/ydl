@@ -36,8 +36,7 @@ TextArea .text-area--selection { background: #245baf; }
 #scope { width: 22; margin-right: 2; }
 #quality { width: 11; margin-right: 2; }
 #destination, #settings-output { width: 1fr; margin-right: 1; }
-#form-error, #add-error, #add-storage, #browse-error, #settings-error { height: auto; color: #ffb47a; }
-#form-error:empty, #add-error:empty, #add-storage:empty, #browse-error:empty, #settings-error:empty { height: 0; }
+FormError { height: auto; color: #ffb47a; }
 #queue-panel { height: 1fr; min-height: 6; }
 #queue-summary, .section-title { height: 1; background: #1c365d; color: #b4d9ff; text-style: bold; padding: 0 1; }
 #transfer-title { text-wrap: nowrap; text-overflow: ellipsis; }
@@ -66,6 +65,7 @@ Dashboard.-tall #notice-scroll.-restored { border: solid $ydl-outline; max-heigh
 Dashboard.-wide #tagline { display: block; }
 Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
+Dashboard.-wide.-standard-height #action-area { dock: none; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
 Dashboard.-inline-destination.-tall #form-options { layout: horizontal; }
 Dashboard.-inline-destination.-tall #media-options { width: 72; }
