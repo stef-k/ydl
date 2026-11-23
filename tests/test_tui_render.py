@@ -10,7 +10,7 @@ from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
 from ydl.models import BackendStatus, Decision, Event, Settings
-from ydl.tui_dialogs import RunnerPrompt, SettingsPanel
+from ydl.tui_dialogs import AddURLs, RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
 
 from tui_pilot import PilotCase
@@ -146,6 +146,35 @@ class RenderTests(PilotCase):
             await pilot.pause()
             self.assertIn("Video 29", self.screen_text(app))
             self.assertTrue(await pilot.click("#help"))
+
+    async def test_wrapped_destination_error_keeps_the_wide_footer_clickable(self):
+        async with self.populated_dashboard() as (app, pilot, _, _):
+            await pilot.resize_terminal(100, 24)
+            await pilot.pause()
+            existing_file = self.output / ("existing-recording-" * 5 + ".mp3")
+            existing_file.touch()
+            destination = app.dashboard.query_one("#destination")
+            destination.value = str(existing_file)
+            self.assertTrue(await pilot.click("#add-urls"))
+            await pilot.pause()
+            self.assertIs(app.focused, destination)
+            rendered = self.screen_text(app)
+            self.assertIn("Correct the path or choose another directory", rendered)
+            self.assertIn("Stop queue", rendered)
+            self.assertIn("Help", rendered)
+            self.assertIn("Quit", rendered)
+            self.assertTrue(await pilot.click("#primary"))
+            await self.wait_for(pilot, lambda: not app.session.busy)
+
+            await pilot.resize_terminal(150, 38)
+            destination.value = str(self.output)
+            self.assertTrue(await pilot.click("#add-urls"))
+            self.assertIsInstance(app.screen, AddURLs)
+            await pilot.press("escape")
+            await pilot.pause()
+            transfer = app.dashboard.query_one("#transfer-panel")
+            queue = app.dashboard.query_one("#queue-panel")
+            self.assertEqual(transfer.region.y, queue.region.bottom + 1)
 
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):

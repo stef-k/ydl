@@ -66,6 +66,7 @@ Dashboard.-wide #tagline { display: block; }
 Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
 Dashboard.-wide.-standard-height #action-area { dock: none; }
+Dashboard.-wide.-standard-height.-form-error #action-area { dock: bottom; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
 Dashboard.-inline-destination.-tall #form-options { layout: horizontal; }
 Dashboard.-inline-destination.-tall #media-options { width: 72; }

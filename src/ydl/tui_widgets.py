@@ -226,6 +226,10 @@ class Dashboard(Screen):
     def button_pressed(self, event):
         self.app.dashboard_button(event.button.id)
 
+    def set_form_error(self, message):
+        self.query_one("#form-error", FormError).set_message(message)
+        self.set_class(bool(message), "-form-error")
+
     def show_defaults(self, prefs):
         self.query_one("#destination", Input).value = prefs.output
         quality = self.query_one("#quality", Select)

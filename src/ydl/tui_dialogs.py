@@ -245,7 +245,8 @@ class AddURLs(Panel):
                 return
             rejected.sort()
             editor.load_text("\n".join(raw for _, raw, _ in rejected))
-            self.show_error("\n".join(f"Line {number} · {reason}" for number, _, reason in rejected))
+            messages = (f"Line {number} · {reason}" for number, (_, _, reason) in enumerate(rejected, 1))
+            self.show_error("\n".join(messages))
         finally:
             self.saving = False
             self.sync()

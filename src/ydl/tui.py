@@ -16,7 +16,7 @@ from .tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, Sett
 from .tui_jobs import Details, RecentJobs, RowMenu
 from .tui_queue import QueueFile
 from .tui_session import QueueSession
-from .tui_widgets import Dashboard, FormError, JobTable, move_target
+from .tui_widgets import Dashboard, JobTable, move_target
 
 MAIN_SHORTCUTS = {"add", "retry_selected", "retry_failed", "details", "settings",
                   "row_menu", "remove", "clear_complete", "help"}
@@ -209,21 +209,20 @@ class YdlApp(App[int]):
             return
         draft = self.dashboard.query_one("#draft", TextArea)
         field = self.dashboard.query_one("#destination", Input)
-        error = self.dashboard.query_one("#form-error", FormError)
         try:
             output = output_directory(field.value)
         except config.InvalidOutput as exc:
-            error.set_message(clean(exc))
+            self.dashboard.set_form_error(clean(exc))
             field.focus()
             return
         quality = self.dashboard.query_one("#quality", Select)
         try:
             selected_quality = config.quality_value(quality.value)
         except YdlError as exc:
-            error.set_message(clean(exc))
+            self.dashboard.set_form_error(clean(exc))
             quality.focus()
             return
-        error.set_message("")
+        self.dashboard.set_form_error("")
         scope = self.dashboard.query_one("#scope", Select).value
         retain = self.dashboard.query_one("#retain").value
         self.show(AddURLs(draft.text, (scope, selected_quality, retain, output)),
