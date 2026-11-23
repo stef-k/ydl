@@ -37,8 +37,8 @@ TextArea .text-area--selection { background: #245baf; }
 #quality { width: 11; margin-right: 2; }
 #destination, #settings-output { width: 1fr; margin-right: 1; }
 FormError { height: auto; color: #ffb47a; }
-/* Keep room for the queue and actions while the diagnostic scrolls. */
-#form-error-scroll { display: none; height: auto; max-height: 1; scrollbar-size-vertical: 1; }
+/* Match Textual's two-row mouse-wheel step while leaving room for the queue. */
+#form-error-scroll { display: none; height: auto; max-height: 2; scrollbar-size-vertical: 1; }
 #form-error-scroll:focus { background: $ydl-input; }
 #queue-panel { height: 1fr; min-height: 6; }
 #queue-summary, .section-title { height: 1; background: #1c365d; color: #b4d9ff; text-style: bold; padding: 0 1; }

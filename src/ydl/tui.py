@@ -205,8 +205,12 @@ class YdlApp(App[int]):
             self.details(event.row_id)
 
     def action_add(self):
-        if not self.session.index.editable or self.session.backend.config_error:
+        index = self.session.index
+        if not index.editable or self.session.backend.config_error:
             return
+        if index.restore_notice:
+            index.restore_notice = ""
+            self.dashboard.update_notice(self.session)
         draft = self.dashboard.query_one("#draft", TextArea)
         field = self.dashboard.query_one("#destination", Input)
         try:

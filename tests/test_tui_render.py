@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
+from textual.events import MouseScrollDown, MouseScrollUp
 from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
@@ -176,6 +177,22 @@ class RenderTests(PilotCase):
                     await pilot.press("ctrl+home")
             self.assertTrue(await pilot.click("#primary"))
             await self.wait_for(pilot, lambda: not app.session.busy)
+
+    async def test_compact_destination_error_is_readable_with_the_mouse(self):
+        existing_file = self.output / "existing-file"
+        existing_file.touch()
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            app.dashboard.query_one("#destination").value = str(existing_file)
+            self.assertTrue(await pilot.click("#add-urls"))
+            diagnostic = app.dashboard.query_one("#form-error-scroll")
+            await pilot._post_mouse_events([MouseScrollDown], diagnostic, offset=(2, 0))
+            await self.wait_for(pilot, lambda: f"{existing_file.name}." in self.screen_text(app))
+            scrolled = self.screen_text(app)
+            await pilot._post_mouse_events([MouseScrollUp], diagnostic, offset=(2, 0))
+            await self.wait_for(pilot, lambda: "Correct the path" in self.screen_text(app))
+            self.assertIn("Cannot use destination", scrolled + self.screen_text(app))
 
     async def test_wide_destination_error_keeps_layout_compact_and_clears_after_browse(self):
         async with self.populated_dashboard() as (app, pilot, _, _):

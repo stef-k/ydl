@@ -5,6 +5,7 @@ import asyncio
 from . import backend, config, jobs
 from .models import BackendStatus, YdlError
 from .process import Log
+from .terminal import clean
 
 
 def backend_key(prefs):
@@ -17,7 +18,8 @@ def output_directory(value):
         path = config.output_path(value)
         jobs.safe_destination(path, remedy="")
     except (OSError, jobs.DestinationChanged) as exc:
-        raise config.InvalidOutput(f"Correct the path or choose another directory.\n{str(exc).rstrip()}", 2) from exc
+        detail = clean(" ".join(str(exc).splitlines())).rstrip()
+        raise config.InvalidOutput(f"Correct the path or choose another directory.\n{detail}", 2) from exc
     return path
 
 

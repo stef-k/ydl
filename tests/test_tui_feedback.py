@@ -165,10 +165,13 @@ class FeedbackTests(PilotCase):
             self.assertIn(f"Configuration error at {self.paths.config}", "\n".join(dialog_lines))
 
     async def test_invalid_destination_shows_inline_error_and_keeps_draft(self):
+        row = self.entry("Queued")
+        self.disk.save([row])
         draft = self.entry("A").url
         app = self.app(prefill=draft)
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
+            await self.wait_for(pilot, lambda: "Queue restored" in self.screen_text(app))
             destination = app.screen.query_one("#destination")
             destination.value = ""
             await pilot.click("#add-urls")
@@ -177,12 +180,14 @@ class FeedbackTests(PilotCase):
             self.assertIs(app.focused, destination)
             self.assertEqual(app.screen.query_one("#draft", TextArea).text, draft)
             self.assertIn("Output must name a directory", self.screen_text(app))
+            self.assertNotIn("Queue restored", self.screen_text(app))
             await pilot.press("x")
             self.assertNotIn("Output must name a directory", self.screen_text(app))
+            self.assertNotIn("Queue restored", self.screen_text(app))
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()
-        file = self.root / "existing-file"
+        file = self.root / "existing\nrecording\u2028test.mp3"
         file.touch()
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
@@ -206,6 +211,8 @@ class FeedbackTests(PilotCase):
                 self.assertIs(app.focused, output)
                 self.assertEqual(output.value, value)
                 self.assertFalse(self.paths.config.exists())
+                if value:
+                    self.assertIn("existing recording test.mp3", str(error.render()))
             new_directory = self.root / "new" / "downloads"
             output.value = str(new_directory)
             await pilot.click("#save-settings")
