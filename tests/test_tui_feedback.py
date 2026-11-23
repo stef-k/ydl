@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from textual.widgets import TabbedContent, TextArea
 
-from ydl import jobs, runner
+from ydl import config, jobs, runner
 from ydl.models import Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
@@ -132,25 +132,68 @@ class FeedbackTests(PilotCase):
                 self.assertEqual(app.screen.query_one(TextArea).text, draft)
                 self.assertEqual([row.url for row in self.disk.read()], [first.url, second.url])
 
+    async def test_add_confirmation_preserves_draft_when_config_becomes_invalid(self):
+        row = self.entry("A")
+        self.disk.save([row])
+        draft = f"{row.url}\n{self.entry('B').url}"
+        app = self.app(prefill=draft)
+        finish_check = asyncio.Event()
+
+        async def check(*_args, **_kwargs):
+            await finish_check.wait()
+
+        self.backends.side_effect = check
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            await self.submit(pilot)
+            await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
+            confirmation = app.screen
+            self.paths.config.write_text("quality = [")
+            finish_check.set()
+            await self.wait_for(pilot, lambda: bool(app.session.backend.config_error))
+            await pilot.click("#confirm")
+            await self.wait_for(pilot, lambda: app.screen is not confirmation and
+                                (not isinstance(app.screen, AddURLs) or not app.screen.saving))
+            self.assertEqual(self.disk.read(), [row])
+            self.assertIsInstance(app.screen, AddURLs)
+            self.assertEqual(app.screen.query_one(TextArea).text, draft)
+            self.assertIs(app.focused, app.screen.query_one(TextArea))
+            self.assertTrue(app.screen.query_one("#submit-add").disabled)
+            error = str(app.screen.query_one("#add-error").render())
+            self.assertIn(f"Configuration error at {self.paths.config}", error)
+
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()
+        file = self.root / "existing-file"
+        file.touch()
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
             await pilot.click("#settings")
             await self.wait_for(pilot, lambda: isinstance(app.screen, SettingsPanel) and app.screen.ready)
-            output = app.screen.query_one("#settings-output")
-            output.value = ""
-            await pilot.click("#--content-tab-backend-settings")
-            tabs = app.screen.query_one(TabbedContent)
-            self.assertEqual(tabs.active, "backend-settings")
+            settings = app.screen
+            output = settings.query_one("#settings-output")
+            tabs = settings.query_one(TabbedContent)
+            error = settings.query_one("#settings-error")
+            cases = [("", "Output must name a directory"), (str(file), "expected a readable real directory")]
+            for value, message in cases:
+                output.value = value
+                await pilot.click("#--content-tab-backend-settings")
+                self.assertEqual(tabs.active, "backend-settings")
+                await pilot.click("#save-settings")
+                await self.wait_for(pilot, lambda: app.screen is not settings or message in str(error.render()))
+                await pilot.pause()
+                self.assertIs(app.screen, settings, value)
+                self.assertIn(message, str(error.render()))
+                self.assertEqual(tabs.active, "general")
+                self.assertIs(app.focused, output)
+                self.assertEqual(output.value, value)
+                self.assertFalse(self.paths.config.exists())
+            new_directory = self.root / "new" / "downloads"
+            output.value = str(new_directory)
             await pilot.click("#save-settings")
-            error = app.screen.query_one("#settings-error")
-            await self.wait_for(pilot, lambda: "Output must name a directory" in str(error.render()))
-            await pilot.pause()
-            self.assertEqual(tabs.active, "general")
-            self.assertIs(app.focused, output)
-            self.assertEqual(output.value, "")
-            self.assertFalse(self.paths.config.exists())
+            await self.wait_for(pilot, lambda: app.screen is app.dashboard)
+            self.assertEqual(config.load(self.paths.config).output, str(new_directory))
+            self.assertFalse(new_directory.exists())
 
     async def test_backend_failure_replaces_restored_notice(self):
         self.disk.save([self.entry("A")])

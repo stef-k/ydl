@@ -134,6 +134,18 @@ class RenderTests(PilotCase):
             self.assertIn("ETA 00:17", progress)
             self.assertNotIn("61%", progress)
 
+    async def test_long_restored_queue_keeps_wide_footer_visible(self):
+        self.disk.save([self.entry(str(number)) for number in range(30)])
+        app = self.app()
+        async with app.run_test(size=(150, 38)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.pause()
+            text = "\n".join(self.rendered_lines(app))
+            self.assertIn("Start queue", text)
+            self.assertIn("Help", text)
+            self.assertIn("Queue restored · 30 Pending · 0 Interrupted", text)
+            self.assertTrue(await pilot.click("#help"))
+
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             queue = app.dashboard.query_one("#queue")

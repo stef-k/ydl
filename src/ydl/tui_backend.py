@@ -2,13 +2,28 @@
 
 import asyncio
 
-from . import backend, config
+from . import backend, config, jobs
 from .models import BackendStatus, YdlError
 from .process import Log
 
 
 def backend_key(prefs):
     return prefs.channel, prefs.auto_update
+
+
+def output_directory(value):
+    """Resolve a TUI destination and validate its existing path components."""
+    try:
+        path = config.output_path(value)
+        jobs.safe_destination(path)
+    except (OSError, jobs.DestinationChanged) as exc:
+        raise config.InvalidOutput(str(exc), 2) from exc
+    return path
+
+
+def save_preferences(path, values):
+    output_directory(values.get("output", config.Preferences.output))
+    return config.save(path, values)
 
 
 class BackendReadiness:
@@ -52,7 +67,7 @@ class BackendReadiness:
 
     async def save(self, values):
         async with self.preferences_lock:
-            prefs = await asyncio.to_thread(config.save, self.paths.config, values)
+            prefs = await asyncio.to_thread(save_preferences, self.paths.config, values)
             self.apply_preferences(prefs)
             self.changed(defaults=True)
 

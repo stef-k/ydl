@@ -7,10 +7,11 @@ from textual.app import App
 from textual.binding import Binding
 from textual.widgets import DataTable, Input, Select, TextArea
 
-from . import config, jobs
+from . import config
 from .models import YdlError
 from .runner import DecisionDismissed
 from .terminal import clean
+from .tui_backend import output_directory
 from .tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
 from .tui_jobs import Details, RecentJobs, RowMenu
 from .tui_queue import QueueFile
@@ -210,9 +211,8 @@ class YdlApp(App[int]):
         field = self.dashboard.query_one("#destination", Input)
         error = self.dashboard.query_one("#form-error")
         try:
-            output = config.output_path(field.value)
-            jobs.safe_destination(output)
-        except (OSError, YdlError) as exc:
+            output = output_directory(field.value)
+        except config.InvalidOutput as exc:
             error.update(clean(exc))
             field.focus()
             return

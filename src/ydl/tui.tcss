@@ -66,12 +66,9 @@ Dashboard.-tall #notice-scroll.-restored { border: solid $ydl-outline; max-heigh
 Dashboard.-wide #tagline { display: block; }
 Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
-Dashboard.-wide.-tall #action-area { dock: none; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
 Dashboard.-inline-destination.-tall #form-options { layout: horizontal; }
 Dashboard.-inline-destination.-tall #media-options { width: 72; }
-Dashboard.-wide #queue-panel { height: auto; }
-Dashboard.-wide #queue { height: auto; min-height: 3; max-height: 50vh; }
 Dashboard.-wide.-tall #transfer { height: 4; padding: 1; }
 Dashboard.-wide #controls { padding: 0 1; }
 Dashboard.-wide #controls Button { padding: 0 1; margin-right: 1; }

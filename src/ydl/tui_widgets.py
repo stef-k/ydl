@@ -188,21 +188,21 @@ class Dashboard(Screen):
                 yield Static("Queue · 0 URLs", id="queue-summary", markup=False)
                 yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
                                cursor_foreground_priority="renderable")
+        with Vertical(id="action-area"):
             with Vertical(id="transfer-panel", classes="panel"):
                 yield Static("Active transfer", id="transfer-title", classes="section-title", markup=False)
                 yield Static("No active transfer", id="transfer")
-            with Vertical(id="action-area"):
-                with Horizontal(id="controls"):
-                    yield button("Start queue", "primary", "primary")
-                    yield button("Retry failed", "retry-failed")
-                    yield button("Clear completed", "clear-completed")
-                    yield button("Recent jobs", "recent")
-                    yield button("Help", "help")
-                    yield button("Quit", "quit")
-                with Horizontal(id="status-line"):
-                    with VerticalScroll(id="notice-scroll"):
-                        yield Static("", id="notice", markup=False)
-                    yield button("Recover queue", "recover", "warning")
+            with Horizontal(id="controls"):
+                yield button("Start queue", "primary", "primary")
+                yield button("Retry failed", "retry-failed")
+                yield button("Clear completed", "clear-completed")
+                yield button("Recent jobs", "recent")
+                yield button("Help", "help")
+                yield button("Quit", "quit")
+            with Horizontal(id="status-line"):
+                with VerticalScroll(id="notice-scroll"):
+                    yield Static("", id="notice", markup=False)
+                yield button("Recover queue", "recover", "warning")
 
     def on_mount(self):
         self.app.call_after_refresh(self.app.startup, self)

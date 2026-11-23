@@ -259,7 +259,7 @@ class AddURLs(Panel):
 
             def append(rows):
                 nonlocal duplicate
-                if session.closing:
+                if session.closing or session.backend.config_error:
                     return None
                 duplicate = self.unconfirmed_duplicate(rows, accepted, confirmed)
                 return [*rows, *(entry for _, entry in accepted)] if duplicate is None else None
@@ -282,12 +282,14 @@ class AddURLs(Panel):
         return not session.closing
 
     def show_save_error(self, text, accepted):
-        index = self.app.session.index
+        session = self.app.session
+        index = session.index
         if index.error:
             self.recovery_draft = text, accepted
             self.app.recovery_draft = self.recovery_draft
             self.app.refresh_views()
-        self.show_error(clean_lines(index.error or index.notice or "The queue cannot accept changes right now."))
+        message = index.error or session.backend.config_error or index.notice
+        self.show_error(clean_lines(message or "The queue cannot accept changes right now."))
 
     def recovered(self, draft):
         self.recovery_draft = None
