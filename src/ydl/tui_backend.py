@@ -15,9 +15,9 @@ def output_directory(value):
     """Resolve a TUI destination and validate its existing path components."""
     try:
         path = config.output_path(value)
-        jobs.safe_destination(path, remedy="Correct the path or choose another directory.")
+        jobs.safe_destination(path, remedy="")
     except (OSError, jobs.DestinationChanged) as exc:
-        raise config.InvalidOutput(str(exc), 2) from exc
+        raise config.InvalidOutput(f"Correct the path or choose another directory.\n{str(exc).rstrip()}", 2) from exc
     return path
 
 

@@ -156,6 +156,7 @@ class Dashboard(Screen):
         self.table_columns = ()
         self.position = 0
         self.notice_text = None
+        self.rejected_option = None
 
     def compose(self):
         brand = Text()
@@ -193,7 +194,8 @@ class Dashboard(Screen):
                         yield label("Save to", "field-label")
                         yield Input(id="destination", compact=True)
                         yield button("Browse", "browse")
-                yield FormError("form-error")
+                with VerticalScroll(id="form-error-scroll"):
+                    yield FormError("form-error")
             with Vertical(id="queue-panel", classes="panel"):
                 yield Static("Queue · 0 URLs", id="queue-summary", markup=False)
                 yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
@@ -226,9 +228,22 @@ class Dashboard(Screen):
     def button_pressed(self, event):
         self.app.dashboard_button(event.button.id)
 
-    def set_form_error(self, message):
-        self.query_one("#form-error", FormError).set_message(message)
-        self.set_class(bool(message), "-form-error")
+    def set_form_error(self, message, *, field=None):
+        self.rejected_option = (field, field.value) if field is not None else None
+        scroll = self.query_one("#form-error-scroll", VerticalScroll)
+        scroll.query_one(FormError).set_message(message)
+        scroll.display = bool(message)
+        scroll.scroll_home(animate=False, immediate=True)
+        if field is not None:
+            field.focus()
+
+    @on(Input.Changed, "#destination")
+    @on(Select.Changed, "#quality")
+    def option_changed(self, event):
+        if self.rejected_option is not None:
+            field, rejected = self.rejected_option
+            if event.control is field and field.value != rejected:
+                self.set_form_error("")
 
     def show_defaults(self, prefs):
         self.query_one("#destination", Input).value = prefs.output

@@ -10,7 +10,7 @@ from textual.widgets import DataTable, Input, Select, TextArea
 from . import config
 from .models import YdlError
 from .runner import DecisionDismissed
-from .terminal import clean
+from .terminal import clean, clean_lines
 from .tui_backend import output_directory
 from .tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
 from .tui_jobs import Details, RecentJobs, RowMenu
@@ -212,15 +212,13 @@ class YdlApp(App[int]):
         try:
             output = output_directory(field.value)
         except config.InvalidOutput as exc:
-            self.dashboard.set_form_error(clean(exc))
-            field.focus()
+            self.dashboard.set_form_error(clean_lines(exc), field=field)
             return
         quality = self.dashboard.query_one("#quality", Select)
         try:
             selected_quality = config.quality_value(quality.value)
         except YdlError as exc:
-            self.dashboard.set_form_error(clean(exc))
-            quality.focus()
+            self.dashboard.set_form_error(clean(exc), field=quality)
             return
         self.dashboard.set_form_error("")
         scope = self.dashboard.query_one("#scope", Select).value

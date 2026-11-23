@@ -10,7 +10,7 @@ from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
 from ydl.models import BackendStatus, Decision, Event, Settings
-from ydl.tui_dialogs import AddURLs, RunnerPrompt, SettingsPanel
+from ydl.tui_dialogs import AddURLs, Browse, RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
 
 from tui_pilot import PilotCase
@@ -147,9 +147,39 @@ class RenderTests(PilotCase):
             self.assertIn("Video 29", self.screen_text(app))
             self.assertTrue(await pilot.click("#help"))
 
-    async def test_wrapped_destination_error_keeps_the_wide_footer_clickable(self):
+    async def test_wrapped_destination_error_keeps_queue_and_footer_usable(self):
         async with self.populated_dashboard() as (app, pilot, _, _):
-            await pilot.resize_terminal(100, 24)
+            existing_file = self.output / ("existing-recording-" * 5 + ".mp3")
+            existing_file.touch()
+            destination = app.dashboard.query_one("#destination")
+            destination.value = str(existing_file)
+            queue = app.dashboard.query_one("#queue")
+            for width in (80, 100):
+                with self.subTest(width=width):
+                    await pilot.resize_terminal(width, 24)
+                    await pilot.pause()
+                    self.assertTrue(await pilot.click("#add-urls"))
+                    self.assertIs(app.focused, destination)
+                    rendered = self.screen_text(app)
+                    for label in ("Correct the path or choose another directory", "Stop queue", "Help", "Quit"):
+                        self.assertIn(label, rendered)
+                    await pilot.press("tab", "tab", "end")
+                    self.assertEqual(app.focused.id, "form-error-scroll")
+                    self.assertIn(".mp3.", self.screen_text(app))
+                    action_x = sum(column.width + 2 * queue.cell_padding for column in queue.ordered_columns[:-1]) + 1
+                    self.assertTrue(await pilot.click(queue, offset=(action_x, 1)))
+                    self.assertIsInstance(app.screen, RowMenu)
+                    await pilot.press("escape")
+                    self.assertIs(app.focused, queue)
+                    await pilot.press("ctrl+end")
+                    self.assertIn("× Video Una", self.screen_text(app))
+                    await pilot.press("ctrl+home")
+            self.assertTrue(await pilot.click("#primary"))
+            await self.wait_for(pilot, lambda: not app.session.busy)
+
+    async def test_wide_destination_error_keeps_layout_compact_and_clears_after_browse(self):
+        async with self.populated_dashboard() as (app, pilot, _, _):
+            await pilot.resize_terminal(220, 55)
             await pilot.pause()
             existing_file = self.output / ("existing-recording-" * 5 + ".mp3")
             existing_file.touch()
@@ -157,24 +187,21 @@ class RenderTests(PilotCase):
             destination.value = str(existing_file)
             self.assertTrue(await pilot.click("#add-urls"))
             await pilot.pause()
-            self.assertIs(app.focused, destination)
-            rendered = self.screen_text(app)
-            self.assertIn("Correct the path or choose another directory", rendered)
-            self.assertIn("Stop queue", rendered)
-            self.assertIn("Help", rendered)
-            self.assertIn("Quit", rendered)
-            self.assertTrue(await pilot.click("#primary"))
-            await self.wait_for(pilot, lambda: not app.session.busy)
-
-            await pilot.resize_terminal(150, 38)
-            destination.value = str(self.output)
-            self.assertTrue(await pilot.click("#add-urls"))
-            self.assertIsInstance(app.screen, AddURLs)
-            await pilot.press("escape")
-            await pilot.pause()
+            self.assertIn("Cannot use destination", self.screen_text(app))
             transfer = app.dashboard.query_one("#transfer-panel")
             queue = app.dashboard.query_one("#queue-panel")
+            gap_with_error = transfer.region.y - queue.region.bottom
+
+            self.assertTrue(await pilot.click("#browse"))
+            self.assertIsInstance(app.screen, Browse)
+            self.assertTrue(await pilot.click("#choose"))
+            await pilot.pause()
+            self.assertEqual(destination.value, str(self.output))
+            self.assertNotIn("Cannot use destination", self.screen_text(app))
+            self.assertEqual(gap_with_error, 1)
             self.assertEqual(transfer.region.y, queue.region.bottom + 1)
+            self.assertTrue(await pilot.click("#add-urls"))
+            self.assertIsInstance(app.screen, AddURLs)
 
     async def test_wide_dashboard_and_modal_controls_after_resize(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):

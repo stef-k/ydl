@@ -177,6 +177,8 @@ class FeedbackTests(PilotCase):
             self.assertIs(app.focused, destination)
             self.assertEqual(app.screen.query_one("#draft", TextArea).text, draft)
             self.assertIn("Output must name a directory", self.screen_text(app))
+            await pilot.press("x")
+            self.assertNotIn("Output must name a directory", self.screen_text(app))
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()

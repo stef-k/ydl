@@ -457,7 +457,7 @@ class SettingsPanel(Panel):
         try:
             await self.app.session.backend.save(values)
         except (OSError, YdlError) as exc:
-            self.query_one("#settings-error", FormError).set_message(clean(str(exc)))
+            self.query_one("#settings-error", FormError).set_message(clean_lines(exc))
             if isinstance(exc, config.InvalidOutput):
                 self.query_one(DialogTabs).active = "general"
                 self.call_after_refresh(self.set_focus, output)
