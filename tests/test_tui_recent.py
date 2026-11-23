@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import replace
 from unittest.mock import patch
 
+from textual.widgets import Button
+
 from ydl import jobs, runner
 from ydl.models import Result, Settings
 from ydl.tui_jobs import Details, RecentJobs
@@ -44,6 +46,53 @@ class RecentJobsTests(PilotCase):
                 finally:
                     release.set()
                     await pilot.pause()
+
+    async def test_recovery_releases_recent_job_lock_before_retry(self):
+        row = replace(self.entry("Recovered"), status="failed")
+        store = jobs.JobStore(self.paths.state)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, Settings("single", "0", False, self.output),
+                                      [jobs.make_item(1, "Recovered", "Track", False)],
+                                      enqueued_base=row.output))
+        self.disk.path.write_text("invalid queue JSON")
+        inspecting, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        inspect = jobs.inspect_job
+
+        async def verify(store, row_id, *, enqueued=None):
+            if enqueued is None:
+                with store.observe(row_id):
+                    inspecting.set()
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        cancelling.set()
+                        await release.wait()
+                        raise
+            return await inspect(store, row_id, enqueued=enqueued)
+
+        app = self.app()
+        with patch.object(jobs, "inspect_job", side_effect=verify), patch.object(
+                runner, "execute", return_value=Result(failed=1)) as execute:
+            async with app.run_test(size=(100, 30)) as pilot:
+                try:
+                    await self.wait_for(pilot, lambda: app.session.can_recover)
+                    self.assertTrue(await pilot.click("#recent"))
+                    await self.wait_for(pilot, inspecting.is_set)
+                    await pilot.press("escape")
+                    self.disk.save([row])
+                    self.assertTrue(await pilot.click("#recover"))
+                    await self.wait_for(pilot, cancelling.is_set)
+                    self.assertTrue(app.dashboard.query_one("#retry-failed", Button).disabled)
+                finally:
+                    release.set()
+                    await pilot.pause()
+                await self.ready(pilot, app)
+                self.assertEqual(app.session.index.view(row.id).status, "Failed")
+                self.assertFalse(app.session.busy)
+                self.assertTrue(await pilot.click("#retry-failed"))
+                await self.wait_for(pilot, lambda: not app.session.busy)
+                self.assertEqual(app.session.index.view(row.id).status, "Failed")
+                execute.assert_awaited_once()
 
     async def test_reopening_recent_during_retry_settlement_preserves_result(self):
         row_id = self.entry("External").id

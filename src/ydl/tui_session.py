@@ -16,7 +16,7 @@ class QueueSession:
         self.store = jobs.JobStore(paths.state)
         self.index = QueueIndex(disk, self.store, self.index_changed, self.inspect)
         self.backend = BackendReadiness(paths, self.backend_changed)
-        self.inspections = set()
+        self.inspections = {}
         self.serial = None
         self.operation = None
         self.armed = False
@@ -242,28 +242,36 @@ class QueueSession:
         return replace(entry, status=status, diagnostic=diagnostic), View(labels[status], observation)
 
     async def inspect(self, row_id, entry=None):
-        if self.closing:
+        if self.closing or (entry is None and self.index.row(row_id) is not None):
             return None
+        # A recovered row can supersede a Recent jobs read that still holds the job lock.
+        if entry is not None and (recent := self.inspections.get(row_id)) is not None:
+            if not recent.cancelling():
+                recent.cancel()
+            await asyncio.wait((recent,))
+            if self.closing:
+                return None
         task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
-        self.inspections.add(task)
+        self.inspections[row_id] = task
         try:
             return await task
         except asyncio.CancelledError:
-            if not self.closing:
+            if not (self.closing or (entry is None and self.index.row(row_id) is not None)):
                 raise
         finally:
-            self.inspections.discard(task)
+            if self.inspections.get(row_id) is task:
+                del self.inspections[row_id]
 
     async def entry_result(self, entry, result):
         if result.declined:
             diagnostic = "Playlist download declined"
             return replace(entry, status="cancelled", diagnostic=diagnostic), View("Cancelled")
         diagnostic = "\n".join(result.diagnostics)
+        observed = await self.inspect(entry.id, entry)
         if result.destination_changed and not result.output_conflict:
             hint = "interrupted" if entry.status in ("pending", "cancelled") else entry.status
-            return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", diagnostic=result.attention)
+            return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", observed, result.attention)
         hint = "failed" if result.failed else "complete"
-        observed = await self.inspect(entry.id, entry)
         if result.attention:
             display = View("Needs attention", observed, result.attention)
         elif observed is None or observed.state == "missing":
@@ -293,7 +301,7 @@ class QueueSession:
         if quitting:
             self.closing = True
             # Cancel reads separately so in-flight queue writes can still settle.
-            for task in self.inspections:
+            for task in self.inspections.values():
                 if not task.cancelling():
                     task.cancel()
         if self.stopping:

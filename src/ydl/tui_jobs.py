@@ -107,7 +107,10 @@ class RecentJobs(Panel):
         result = await session.inspect(row_id)
         if result != previous:
             session.external_results.pop(row_id, None)
-        session.external[row_id] = result
+        if result is None:
+            session.external.pop(row_id, None)
+        else:
+            session.external[row_id] = result
         session.changed()
 
     def row_info(self, row_id):

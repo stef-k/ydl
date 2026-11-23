@@ -6,6 +6,8 @@
   choices, responsive settings and job details, and saved-job retry.
 - Preserve recent-job retry results, reuse queue verification for linked jobs,
   and refresh job details after Recheck.
+- Release superseded Recent jobs verification locks during queue recovery and
+  show saved plan details after a destination change.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
