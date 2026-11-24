@@ -1,217 +1,222 @@
 # ydl
 
-**Save a YouTube video or an entire playlist as MP3 from your Linux terminal.**
-Use the command line for quick downloads, or open the interactive terminal
-queue to manage a batch. Files go to `~/Downloads/ydl/` by default. You can
-also keep the video or resume an interrupted download.
+**A simple YouTube-to-MP3 downloader for Linux.**
 
-[Install](#install-on-linux-mint-or-ubuntu) · [Terminal queue](#use-the-terminal-queue) · [Command line](#download-your-first-mp3) · [Switches](#common-switches) · [Defaults](#save-your-defaults)
+Download individual videos or entire playlists as MP3 files. Use the interactive
+terminal interface to queue multiple downloads, or the command line for quick
+downloads.
 
-## Install on Linux Mint or Ubuntu
+- Download multiple videos and playlists, one at a time.
+- Choose your MP3 quality and where to save your files.
+- Optionally keep the original videos alongside the MP3s.
+- Close and reopen the app without losing your download queue.
+- Resume interrupted downloads and retry failed ones without re-downloading
+  verified files.
 
-### 1. Check Python and install FFmpeg and Git
+By default, MP3 files are saved to `~/Downloads/ydl/`.
 
-You need Python 3.11 or newer. The `ffmpeg` package provides both FFmpeg and
-FFprobe.
+[Install](#install) · [Interactive mode](#interactive-mode) · [Command line](#command-line) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
+
+## Install
+
+### Linux Mint and Ubuntu
+
+You need Python 3.11 or newer. Check your version with `python3 --version`.
+
+Install the required tools and download ydl:
 
 ```sh
-python3 --version
 sudo apt update
 sudo apt install ffmpeg git
-```
-
-### 2. Get the source
-
-```sh
 git clone https://github.com/stef-k/ydl.git
 cd ydl
 ```
 
-### 3. Install the command with pipx
-
-Install `pipx` and run the following from the `ydl` checkout. By default
-`pipx` puts the `ydl` command in `~/.local/bin`. If you use `~/bin` for your
-own commands, run `export PIPX_BIN_DIR="$HOME/bin"` before `pipx install .`.
-Keep that export in your shell startup file to use `~/bin` for future pipx
-commands.
+Install ydl with both the interactive interface and the command line:
 
 ```sh
 sudo apt install pipx
-pipx install .
+pipx install '.[tui]'
 pipx ensurepath
 ```
 
-To install the terminal queue too, use `pipx install '.[tui]'` in place of
-`pipx install .`. If you already installed ydl with pipx, run
-`pipx install --force '.[tui]'` from the checkout.
+Open a new terminal and run `ydl tui` to get started.
 
-If your newer Python is installed under a separate name, use a command such
-as `pipx install --python python3.11 .` for the install step. If your `apt`
-doesn't provide `pipx`, use the virtual environment instructions below.
-
-Open a new terminal to load the PATH change, then check that the command works
-from any directory.
-
-```sh
-command -v ydl
-ydl --help
-```
-
-To use `ydl` immediately in your current terminal, run
-`export PATH="$HOME/.local/bin:$PATH"`. Use `export PATH="$HOME/bin:$PATH"`
-if you installed the command there.
+If you only want the command line, use `pipx install .` instead.
 
 <details>
-<summary>Install using a virtual environment instead of pipx</summary>
+<summary>Already installed ydl or need a different installation method?</summary>
 
-From the checkout, install into a virtual environment in your home directory
-and link the command into `~/.local/bin`.
+To add the interactive interface to an existing pipx installation, run
+`pipx install --force '.[tui]'` from the cloned repository.
+
+If your compatible Python is installed as `python3.11`, use
+`pipx install --python python3.11 '.[tui]'`.
+
+If you prefer to install commands in `~/bin`, set
+`export PIPX_BIN_DIR="$HOME/bin"` before installing with pipx. Make sure the
+folder is on your PATH and keep the setting in your shell startup file.
+
+If pipx is unavailable, you can install ydl in a Python virtual environment.
+Run these commands from the cloned repository:
 
 ```sh
 sudo apt install python3-venv
 python3 -m venv "$HOME/.local/share/ydl-venv"
-"$HOME/.local/share/ydl-venv/bin/python" -m pip install .
+"$HOME/.local/share/ydl-venv/bin/python" -m pip install '.[tui]'
 mkdir -p "$HOME/.local/bin"
 ln -s "$HOME/.local/share/ydl-venv/bin/ydl" "$HOME/.local/bin/ydl"
 ```
 
-To include the terminal queue, use `-m pip install '.[tui]'` for the install step.
+Use `-m pip install .` for the command-line-only installation.
 
-If `~/bin` is already on your PATH, you can use it in the last two commands
-instead. If you use `~/.local/bin` and it is missing from your PATH, run
-`export PATH="$HOME/.local/bin:$PATH"`. Add that line to `~/.bashrc` to keep
-it in future interactive Bash sessions.
+If `ydl` is not found, run `export PATH="$HOME/.local/bin:$PATH"` or use
+`~/bin` if you installed it there. Add the appropriate line to your shell
+startup file to make it permanent.
 
 </details>
 
-### First-run setup
+### First use
 
-`ydl` installs and manages its own copy of yt-dlp in your home directory.
-yt-dlp uses **Node.js 22+** or **Deno 2.3+** to get media links from YouTube's
-player. If you already have a compatible runtime on your PATH, `ydl` uses it.
-Otherwise, answer **Yes** at the Deno prompt to install a copy for your account.
+ydl automatically installs and updates its own copy of yt-dlp, the tool it uses
+to download from YouTube. When you start a download, if neither Node.js 22+
+nor Deno 2.3+ is available, ydl offers to install Deno. Choose **Yes** if you
+want ydl to install it for you. No administrator privileges are needed for
+these installations.
 
-## Use the terminal queue
+## Interactive mode
 
-Install the `tui` extra as described above, then open the queue in your terminal.
+Open the app in your terminal:
 
 ```sh
 ydl tui
-# Or open with a link already in the editor
-ydl tui 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-### Start a download
+Use your mouse or keyboard to manage downloads.
 
-1. Paste one YouTube link per line. Choose **Scope**, **MP3 quality**, and whether
-   to **Keep video**. Type a folder in **Save to** or select it with **Browse**.
-2. Select **Add to Queue**. Review or edit the links in **Add URLs**, then
-   select **Add**.
-3. Select **Start queue**. The queue runs one entry at a time and shows the
-   current track and available progress, speed, and time estimates in
-   **Active transfer**.
+### Download videos and playlists
 
-**Auto** scope downloads a playlist-only link as a playlist. For a link to a
-video inside a playlist, it opens a chooser with **This video** selected.
-Choose **Entire playlist** to download the full list. Playlists with 51 or more
-entries or an unknown size ask for confirmation.
+1. Paste one or more YouTube links, one per line.
+2. Choose your MP3 quality, destination folder and whether to keep the video.
+3. Click **Add to Queue**, review your links and click **Add**.
+4. Click **Start queue** to begin downloading.
 
-### Manage the queue and saved jobs
+ydl processes the queue one entry at a time and shows download progress,
+speed and estimated time remaining when available.
 
-- Use **Stop queue** or **Ctrl+C** to stop. The queue reopens idle with its
-  saved entries. Select **Resume queue** to continue an interrupted job.
-- Open a row’s **⋮** menu, or focus the queue and press **F2**, to move pending
-  entries, recheck a job, or remove an entry. Removing rows and using
-  **Clear completed** preserve the media, saved jobs, and logs.
-- Double-click a row or select it and press **Enter** to open **Job Details**.
-  The **Log** tab shows what happened, and **Info** shows the saved destination.
-  If a row shows **Needs attention**, read the diagnostic, fix the problem, and
-  choose **Recheck** from its row menu.
-- Use **Retry failed** to attempt failed rows in queue order, or retry one row
-  from its menu. **Recent jobs** gives access to saved jobs, including eligible
-  jobs started from the command line.
+The **Scope** option lets you choose between a single video and an entire
+playlist. Leave it on **Auto** if you are unsure; ydl will ask when a link
+contains both a video and a playlist. For playlists with more than 50 entries
+or an unknown size, ydl asks for confirmation before downloading. YouTube
+automatically generated mixes are not supported.
 
-Open **Settings** to change defaults for future entries and manage yt-dlp
-updates. Use **Tab** and **Shift+Tab** to move focus, arrow keys to navigate,
-and **Enter** to activate a focused control. Open **Help** for the full list
-of shortcuts. Use **Quit** or **Ctrl+Q** to close the app.
+### Manage your downloads
 
-If a queue storage error appears, scroll the notice to read it, address the
-error, and choose **Recover queue**. The queue file is usually at
-`~/.local/state/ydl/tui-queue.json`, or under `$XDG_STATE_HOME/ydl/` if set.
+- **Stop queue** stops the current work. Your queue is saved automatically.
+  When you reopen the app, select **Start queue** or **Resume queue** when you return.
+- **Retry failed** retries failed downloads.
+- Use the menu next to a queue entry to move pending downloads, retry eligible
+  jobs, recheck their status or remove them.
+- Open **Job Details** by double-clicking a row to see its destination and log.
+- **Recent jobs** lets you view saved downloads, including those started from
+  the command line, and retry eligible unfinished jobs.
+- **Settings** changes your default download options.
 
-## Download your first MP3
+Removing entries or clearing completed downloads from the queue does not
+remove downloaded files, saved jobs or logs.
 
-Replace the example link with a YouTube link. Keep the quotes, especially
-when the link contains `&`.
+Use **Help** for keyboard shortcuts or **Ctrl+Q** to quit.
+
+## Command line
+
+To download a video as MP3, replace the example link with a YouTube link:
 
 ```sh
 ydl 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-Press Enter at **Keep original video file(s)?** to accept the default of
-saving only an MP3. The settings stay on one line while the line below updates
-with download and conversion progress. The final summary tells you how many
-files were saved.
+Press Enter when asked whether to keep the original video to accept your
+current preference (MP3 only by default). Keep the quotes around links.
 
-### Download a playlist
+### Download an entire playlist
 
 ```sh
 ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
-ydl 'https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID' --playlist
 ```
 
-A playlist-only link selects the whole playlist. A link that points to a
-specific video inside a playlist defaults to **This video**. Use
-`--playlist` to select the whole list. Playlists with **51 or more entries**
-or an unknown size ask for confirmation before downloading. Playlist tracks
-are numbered in a subfolder of the output directory.
+Playlist tracks are numbered and saved in a separate folder. If the link points
+to a video within a playlist, ydl asks whether to download that video or the
+whole playlist.
 
-## Common switches
+### Common options
 
-| Switch | What it does |
+| Option | What it does |
 | --- | --- |
-| `--single` | Download only the video named in the link. |
-| `--playlist` | Select the entire playlist. The size confirmation still applies. |
-| `--yes` | Use the default scope and video-retention preference unless you pass explicit flags. If playlist scope is selected, also confirm a large or unknown-size playlist. JavaScript runtime installation still asks for permission. |
-| `--keep-video` / `--no-keep-video` | Choose whether to save the playable video alongside the MP3 for this run. |
-| `--quality 192K` | Set a fixed MP3 bitrate. For variable bitrate, use `0` through `9`, with `0` the highest quality and the default. |
-| `--output "$HOME/Music"` | Save this run to a different folder. |
-| `--no-update` | Use the already installed yt-dlp and skip its update check for this run. |
+| `--single` | Download only the selected video. |
+| `--playlist` | Download the entire playlist (size confirmation still applies). |
+| `--keep-video` | Keep the video as well as the MP3. |
+| `--no-keep-video` | Save only the MP3. |
+| `--quality 192K` | Set the audio bitrate to 192 kbps. |
+| `--output "$HOME/Music"` | Save files to your Music folder. |
+| `--yes` | Use the default choices unless overridden by options; also confirm large or unknown-size playlists when playlist mode is selected. |
+| `--no-update` | Use the installed yt-dlp without installing or updating it. |
 
-For example, to save both files in Music, run
-`ydl 'https://www.youtube.com/watch?v=VIDEO_ID' --keep-video --output "$HOME/Music"`.
+For variable bitrate (VBR), use `0` (highest and the default) to `9` (lowest). The `--yes` option does not bypass permission to install Deno.
 
-## Save your defaults
+For example, to save both the video and MP3 in your Music folder:
 
-See your current settings with `ydl config show`. Settings apply to future
-downloads. A flag on the command line takes precedence for that run.
+```sh
+ydl 'https://www.youtube.com/watch?v=VIDEO_ID' --keep-video --output "$HOME/Music"
+```
 
-| Setting | Built-in default | Example change |
+Run `ydl --help` for all available options.
+
+## Settings
+
+Change your preferences in the interactive app under **Settings**, or from the
+command line using `ydl config set`.
+
+| Setting | Default | Example command |
 | --- | --- | --- |
 | Download folder | `~/Downloads/ydl/` | `ydl config set output "$HOME/Music"` |
-| MP3 quality | Variable bitrate, quality `0` | `ydl config set quality 192K` |
-| Keep the original video | Off | `ydl config set keep_video true` |
-| yt-dlp release channel | `nightly` | `ydl config set channel stable` |
+| MP3 quality | `0` (highest VBR quality) | `ydl config set quality 192K` |
+| Keep video | No | `ydl config set keep_video true` |
+| yt-dlp release channel | Nightly | `ydl config set channel stable` |
 
-Automatic yt-dlp updates are enabled by default. To turn off automatic update
-checks for an existing backend, set `auto_update = false` in
-`~/.config/ydl/config.toml` or the corresponding XDG config location.
+Run `ydl config show` to view your current settings. Command-line options
+change the settings for that download only.
 
-## Retry, diagnose, or update
+yt-dlp updates are checked automatically by default. You can change this in
+**Settings**, or set `auto_update = false` in `~/.config/ydl/config.toml` (or
+the corresponding XDG configuration directory).
 
-| Command | When to use it |
+## Troubleshooting
+
+If a download is interrupted or fails, use **Resume queue** or **Retry failed**
+in the interactive app, or one of these commands:
+
+| Command | What it does |
 | --- | --- |
-| `ydl retry` | Continue the latest unfinished job after a failure or Ctrl+C. Completed files are kept. |
-| `ydl retry JOB_ID` | Retry a specific saved job using the ID shown when it stopped or failed. |
-| `ydl doctor` | Check FFmpeg, yt-dlp, the JavaScript runtime, and directory permissions. |
-| `ydl update` | Install or update the private yt-dlp executable now. |
-| `ydl update --check` | See the installed yt-dlp version and whether an install or update is available. |
-| `ydl --help` | Show download syntax and list other commands. |
+| `ydl retry` | Retry the latest unfinished download job. |
+| `ydl retry JOB_ID` | Retry a specific saved job using its ID. |
+| `ydl doctor` | Check dependencies and directory permissions. |
+| `ydl update` | Install or update yt-dlp. |
+| `ydl update --check` | Check for an available yt-dlp update without installing it. |
 
-If a filename is already occupied, `ydl` leaves the file in place. Move it
-aside before retrying, or start a new download with a different `--output`.
-Job logs are in `~/.local/state/ydl/logs/` by default.
+If a queue entry shows **Needs attention**, open its details, fix the reported
+problem and select **Recheck** from its menu. If a file already exists and
+conflicts with a download, ydl will not overwrite it. Move it aside before
+retrying, or start a new download in a different folder.
+
+<details>
+<summary>Queue recovery and log files</summary>
+
+If the app reports a queue storage error, follow the message, then select
+**Recover queue**. The queue is normally saved in
+`~/.local/state/ydl/tui-queue.json` and logs in `~/.local/state/ydl/logs/`.
+If `XDG_STATE_HOME` is set, ydl uses its `ydl/` subdirectory instead.
+
+</details>
 
 ## Development
 
@@ -221,10 +226,10 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-CI tests the base and TUI installations separately without downloading from
-YouTube. For the live smoke test and acceptance cases, see the
-[TUI specification](spec/ydl-tui-spec.md). The [CLI specification](spec/ydl-cli-spec.md)
-describes the command-line workflow.
+See the [CLI specification](spec/ydl-cli-spec.md) and
+[TUI specification](spec/ydl-tui-spec.md) for implementation details and the
+live smoke test. Report problems on the [issue tracker](https://github.com/stef-k/ydl/issues).
 
-ydl is available under the [MIT License](LICENSE). Third-party tools retain
-their own licenses.
+## License
+
+[MIT](LICENSE). Third-party tools retain their own licenses.
