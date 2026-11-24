@@ -140,6 +140,16 @@ class RenderTests(PilotCase):
             self.assertIn("ETA 00:17", progress)
             self.assertNotIn("61%", progress)
 
+            await pilot.resize_terminal(40, 24)
+            await pilot.pause()
+            queue = app.dashboard.query_one("#queue")
+            self.assertGreater(queue.region.height, queue.header_height)
+            await pilot._post_mouse_events([MouseScrollDown], summary, offset=(4, 0))
+            await pilot.pause()
+            queue.focus()
+            await pilot.press("ctrl+end")
+            self.assertIn("× Video", self.screen_text(app))
+
     async def test_long_restored_queue_keeps_wide_footer_visible(self):
         self.disk.save([self.entry(str(number)) for number in range(30)])
         app = self.app()

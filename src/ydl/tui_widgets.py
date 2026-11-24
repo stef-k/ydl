@@ -356,9 +356,11 @@ class Dashboard(Screen):
         table = self.query_one("#queue", JobTable)
         rows = session.index.rows
         panel = self.query_one("#queue-panel", Vertical)
-        # The wide queue uses the available space up to its last row.
         summary_height = panel.query_one("#queue-summary", Static).content.count("\n") + 1
-        content_height = max(2, len(rows)) + table.header_height + summary_height + panel.styles.gutter.height
+        header_height = table.header_height + summary_height + panel.styles.gutter.height
+        panel.styles.min_height = header_height + 2
+        # The wide queue uses the available space up to its last row.
+        content_height = header_height + max(2, len(rows))
         panel.styles.max_height = content_height if self.has_class("-wide", "-standard-height") else None
         columns = self.columns(self.size.width or 80)
         cells = tuple((row.id, self.row_cells(session, row, i, columns)) for i, row in enumerate(rows, 1))
