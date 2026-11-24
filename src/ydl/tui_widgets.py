@@ -122,6 +122,8 @@ def transfer_text(event, phase, bar_width=18):
 
 
 class JobTable(DataTable):
+    _last_body_click: str | None = None
+
     class Open(Message):
         def __init__(self, table, row_id, menu):
             super().__init__()
@@ -132,6 +134,8 @@ class JobTable(DataTable):
             return self.table
 
     async def _on_click(self, event: events.Click):
+        previous_click = self._last_body_click
+        self._last_body_click = None
         # Textual attaches table cell coordinates to the rendered cell's style.
         meta = event.style.meta
         row = meta.get("row", -1)
@@ -141,8 +145,13 @@ class JobTable(DataTable):
         row_id = self.ordered_rows[row].key.value
         column = meta.get("column", -1)
         actions = column >= 0 and self.ordered_columns[column].key.value == "actions"
-        if actions or event.button == 3 or event.chain >= 2:
-            self.post_message(self.Open(self, row_id, actions or event.button == 3))
+        menu = actions or event.button == 3
+        # Textual chains clicks by screen position, which can move between rows.
+        details = event.button == 1 and event.chain >= 2 and previous_click == row_id
+        if menu or details:
+            self.post_message(self.Open(self, row_id, menu))
+        elif event.button == 1:
+            self._last_body_click = row_id
         event.prevent_default()
         event.stop()
 
@@ -238,6 +247,9 @@ class Dashboard(Screen):
         self.set_class(event.size.width >= 120, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.app.refresh_views)
+        queue = self.focused
+        if isinstance(queue, QueueTable):
+            self.call_after_refresh(queue.reveal_cursor)
 
     @on(Button.Pressed)
     def button_pressed(self, event):

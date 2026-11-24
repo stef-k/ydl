@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
-from textual.events import MouseScrollDown, MouseScrollUp
+from textual.events import MouseDown, MouseScrollDown, MouseScrollUp, MouseUp
 from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
@@ -165,6 +165,25 @@ class RenderTests(PilotCase):
                     await pilot.pause()
                     self.assertIn("× Video", self.screen_text(app))
 
+    async def test_height_only_resize_keeps_the_focused_queue_row_visible(self):
+        entries = [self.entry(str(number)) for number in range(30)]
+        self.disk.save(entries)
+        app = self.app()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await self.ready(pilot, app)
+            queue = app.dashboard.query_one("#queue")
+            queue.focus()
+            await pilot.press("ctrl+end")
+            await pilot.wait_for_animation()
+            self.assertIn("○ Video 29", self.screen_text(app))
+
+            await pilot.resize_terminal(80, 18)
+            await pilot.wait_for_animation()
+            await pilot.pause()
+            self.assertIs(app.focused, queue)
+            self.assertEqual(app.selected, entries[-1].id)
+            self.assertIn("○ Video 29", self.screen_text(app))
+
     async def test_double_click_opens_the_clicked_row_in_a_partially_visible_queue(self):
         async with self.populated_dashboard() as (app, pilot, _, _):
             await pilot.resize_terminal(100, 24)
@@ -181,6 +200,28 @@ class RenderTests(PilotCase):
             self.assertTrue(await pilot.double_click(offset=(12, row_y)))
             self.assertIsInstance(app.screen, Details)
             self.assertEqual(app.screen.row_id, completed)
+
+    async def test_live_summary_wrap_cannot_complete_a_double_click_on_another_row(self):
+        async with self.populated_dashboard() as (app, pilot, emit, event):
+            await pilot.resize_terminal(84, 24)
+            emit(replace(event, position=9))
+            await self.wait_for(pilot, lambda: "Active 9/24" in self.screen_text(app))
+            row_y = next(y for y, line in enumerate(self.rendered_lines(app)) if "✓ Night City Mix" in line)
+
+            async def click():
+                # Let Textual chain the clicks at the same screen coordinates.
+                for event_type in (MouseDown, MouseUp):
+                    app.post_message(event_type(None, 12, row_y, 0, 0, 1, False, False, False))
+                await pilot.pause()
+
+            with patch.object(app, "CLICK_CHAIN_TIME_THRESHOLD", 5):
+                await click()
+                self.assertEqual(app.selected, app.session.index.rows[3].id)
+                emit(replace(event, position=10))
+                await self.wait_for(pilot, lambda: "↻ Goa Trance Vol. 2" in self.rendered_lines(app)[row_y])
+                await click()
+                self.assertIs(app.screen, app.dashboard)
+                self.assertEqual(app.selected, app.session.index.rows[2].id)
 
     async def test_selection_stays_visible_when_live_progress_wraps_the_summary(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):

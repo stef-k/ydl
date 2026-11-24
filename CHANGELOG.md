@@ -15,9 +15,10 @@
 - Block retry when a queued job loses its saved plan during settlement, clear
   the warning after a successful Recheck, and keep queue counts readable at
   compact terminal widths.
-- Keep the focused queue row visible during keyboard navigation and terminal
-  resizing, including when live progress wraps the queue summary. Keep the
-  table in place when clicking a queue row so double-click opens that job.
+- Keep the focused queue row visible during keyboard navigation, terminal
+  resizing, and live progress updates that wrap the queue summary. Keep the
+  table in place on click. A double-click opens Job Details only when both
+  clicks land on the same row.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
