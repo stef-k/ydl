@@ -1,11 +1,12 @@
 # ydl
 
 **Save a YouTube video or an entire playlist as MP3 from your Linux terminal.**
-Use the command line for quick downloads, or open the interactive terminal
-queue to manage a batch. Files go to `~/Downloads/ydl/` by default. You can
-also keep the video or resume an interrupted download.
+Use the interactive terminal user interface (TUI) to choose download options,
+manage a persistent download queue, and view progress. Use the command-line
+interface (CLI) to run downloads directly from the shell. Both save files to
+`~/Downloads/ydl/` by default and can keep the video or resume interrupted work.
 
-[Install](#install-on-linux-mint-or-ubuntu) · [Terminal queue](#use-the-terminal-queue) · [Command line](#download-your-first-mp3) · [Switches](#common-switches) · [Defaults](#save-your-defaults)
+[Install](#install-on-linux-mint-or-ubuntu) · [Use the TUI](#use-the-tui) · [Use the CLI](#use-the-cli) · [CLI switches](#common-switches) · [Defaults](#save-your-defaults)
 
 ## Install on Linux Mint or Ubuntu
 
@@ -27,30 +28,34 @@ git clone https://github.com/stef-k/ydl.git
 cd ydl
 ```
 
-### 3. Install the command with pipx
+### 3. Install ydl with pipx
 
-Install `pipx` and run the following from the `ydl` checkout. By default
-`pipx` puts the `ydl` command in `~/.local/bin`. If you use `~/bin` for your
-own commands, run `export PIPX_BIN_DIR="$HOME/bin"` before `pipx install .`.
-Keep that export in your shell startup file to use `~/bin` for future pipx
-commands.
+Install `pipx` if you need it.
 
 ```sh
 sudo apt install pipx
-pipx install .
-pipx ensurepath
 ```
 
-To install the terminal queue too, use `pipx install '.[tui]'` in place of
-`pipx install .`. If you already installed ydl with pipx, run
-`pipx install --force '.[tui]'` from the checkout.
+Run one of these install commands from the cloned `ydl` folder.
 
-If your newer Python is installed under a separate name, use a command such
-as `pipx install --python python3.11 .` for the install step. If your `apt`
-doesn't provide `pipx`, use the virtual environment instructions below.
+| Interface | Install | Use |
+| --- | --- | --- |
+| Interactive TUI with download queue | `pipx install '.[tui]'` | `ydl tui` |
+| Command line only | `pipx install .` | `ydl URL` |
 
-Open a new terminal to load the PATH change, then check that the command works
-from any directory.
+The TUI installation also includes the CLI. If you already installed ydl with
+pipx, run `pipx install --force '.[tui]'` to add the TUI to that installation.
+
+By default, pipx puts the `ydl` command in `~/.local/bin`. If you use `~/bin`
+for your own commands, run `export PIPX_BIN_DIR="$HOME/bin"` before installing
+ydl. Keep that export in your shell startup file for future pipx installs.
+
+If your newer Python is installed under a separate name, add
+`--python python3.11` to the install command. If your `apt` doesn't provide
+`pipx`, use the virtual environment instructions below.
+
+Run `pipx ensurepath`, then open a new terminal and check that `ydl` works from
+any directory.
 
 ```sh
 command -v ydl
@@ -75,7 +80,7 @@ mkdir -p "$HOME/.local/bin"
 ln -s "$HOME/.local/share/ydl-venv/bin/ydl" "$HOME/.local/bin/ydl"
 ```
 
-To include the terminal queue, use `-m pip install '.[tui]'` for the install step.
+To install the TUI and CLI together, use `-m pip install '.[tui]'` for the install step.
 
 If `~/bin` is already on your PATH, you can use it in the last two commands
 instead. If you use `~/.local/bin` and it is missing from your PATH, run
@@ -91,9 +96,10 @@ yt-dlp uses **Node.js 22+** or **Deno 2.3+** to get media links from YouTube's
 player. If you already have a compatible runtime on your PATH, `ydl` uses it.
 Otherwise, answer **Yes** at the Deno prompt to install a copy for your account.
 
-## Use the terminal queue
+## Use the TUI
 
-Install the `tui` extra as described above, then open the queue in your terminal.
+After installing with the `tui` extra, open the interactive interface in your
+terminal. You can start with an empty editor or prefill a YouTube link.
 
 ```sh
 ydl tui
@@ -101,7 +107,7 @@ ydl tui
 ydl tui 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-### Start a download
+### Add links and start downloading
 
 1. Paste one YouTube link per line. Choose **Scope**, **MP3 quality**, and whether
    to **Keep video**. Type a folder in **Save to** or select it with **Browse**.
@@ -140,7 +146,9 @@ If a queue storage error appears, scroll the notice to read it, address the
 error, and choose **Recover queue**. The queue file is usually at
 `~/.local/state/ydl/tui-queue.json`, or under `$XDG_STATE_HOME/ydl/` if set.
 
-## Download your first MP3
+## Use the CLI
+
+### Download your first MP3
 
 Replace the example link with a YouTube link. Keep the quotes, especially
 when the link contains `&`.
@@ -154,7 +162,7 @@ saving only an MP3. The settings stay on one line while the line below updates
 with download and conversion progress. The final summary tells you how many
 files were saved.
 
-### Download a playlist
+#### Download a playlist
 
 ```sh
 ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
@@ -167,7 +175,7 @@ specific video inside a playlist defaults to **This video**. Use
 or an unknown size ask for confirmation before downloading. Playlist tracks
 are numbered in a subfolder of the output directory.
 
-## Common switches
+### Common switches
 
 | Switch | What it does |
 | --- | --- |
@@ -182,7 +190,7 @@ are numbered in a subfolder of the output directory.
 For example, to save both files in Music, run
 `ydl 'https://www.youtube.com/watch?v=VIDEO_ID' --keep-video --output "$HOME/Music"`.
 
-## Save your defaults
+### Save your defaults
 
 See your current settings with `ydl config show`. Settings apply to future
 downloads. A flag on the command line takes precedence for that run.
@@ -198,7 +206,7 @@ Automatic yt-dlp updates are enabled by default. To turn off automatic update
 checks for an existing backend, set `auto_update = false` in
 `~/.config/ydl/config.toml` or the corresponding XDG config location.
 
-## Retry, diagnose, or update
+### Retry, diagnose, or update
 
 | Command | When to use it |
 | --- | --- |
