@@ -223,6 +223,14 @@ class Dashboard(Screen):
         self.set_class(event.size.width >= 120, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.app.refresh_views)
+        self.call_after_refresh(self.reveal_focused_queue)
+
+    def reveal_focused_queue(self):
+        table = self.query_one("#queue", JobTable)
+        if self.focused is table and table.row_count:
+            # Reveal the selected row inside the table and keep the table above the footer.
+            table.move_cursor()
+            self.query_one("#workspace", VerticalScroll).scroll_to_widget(table, animate=False)
 
     @on(Button.Pressed)
     def button_pressed(self, event):

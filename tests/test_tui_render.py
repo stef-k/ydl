@@ -140,15 +140,28 @@ class RenderTests(PilotCase):
             self.assertIn("ETA 00:17", progress)
             self.assertNotIn("61%", progress)
 
-            await pilot.resize_terminal(40, 24)
-            await pilot.pause()
+    async def test_keyboard_selection_stays_visible_with_a_wrapped_queue_summary(self):
+        async with self.populated_dashboard() as (app, pilot, _, _):
             queue = app.dashboard.query_one("#queue")
-            self.assertGreater(queue.region.height, queue.header_height)
-            await pilot._post_mouse_events([MouseScrollDown], summary, offset=(4, 0))
-            await pilot.pause()
-            queue.focus()
             await pilot.press("ctrl+end")
-            self.assertIn("× Video", self.screen_text(app))
+            await pilot.wait_for_animation()
+            await pilot.pause()
+            for width, height in ((80, 20), (40, 24)):
+                with self.subTest(width=width, height=height):
+                    await pilot.resize_terminal(width, height)
+                    await pilot.pause()
+                    self.assertIs(app.focused, queue)
+                    self.assertIn("× Video", self.screen_text(app))
+                    await pilot.press("ctrl+home")
+                    await pilot.wait_for_animation()
+                    await pilot.pause()
+                    rendered = self.screen_text(app)
+                    self.assertIn("▶ Goa Tr", rendered)
+                    self.assertIn("Stop queue", rendered)
+                    await pilot.press("ctrl+end")
+                    await pilot.wait_for_animation()
+                    await pilot.pause()
+                    self.assertIn("× Video", self.screen_text(app))
 
     async def test_long_restored_queue_keeps_wide_footer_visible(self):
         self.disk.save([self.entry(str(number)) for number in range(30)])
@@ -239,7 +252,7 @@ class RenderTests(PilotCase):
             self.assertTrue(await pilot.click("#add-urls"))
             self.assertIsInstance(app.screen, AddURLs)
 
-    async def test_wide_dashboard_and_modal_controls_after_resize(self):
+    async def test_wide_dashboard_after_resize(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             queue = app.dashboard.query_one("#queue")
             self.assertIn("▶ Goa Trance Collection", "\n".join(self.rendered_lines(app)))
@@ -278,6 +291,10 @@ class RenderTests(PilotCase):
             await pilot.pause()
             row = next(line for line in self.rendered_lines(app) if "Downloading" in line and "61%" in line)
             self.assertIn("Downloading 100/120", row)
+
+    async def test_wide_settings_and_job_details_after_resize(self):
+        async with self.populated_dashboard() as (app, pilot, _, _):
+            queue = app.dashboard.query_one("#queue")
             await pilot.resize_terminal(150, 38)
             await pilot.pause()
             settings = app.dashboard.query_one("#settings")

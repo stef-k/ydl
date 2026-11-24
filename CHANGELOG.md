@@ -15,6 +15,8 @@
 - Block retry when a queued job loses its saved plan during settlement, clear
   the warning after a successful Recheck, and keep queue counts readable at
   compact terminal widths.
+- Keep the focused queue row visible during keyboard navigation and terminal
+  resizing when the queue summary wraps.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
