@@ -122,6 +122,7 @@ def transfer_text(event, phase, bar_width=18):
 
 
 class JobTable(DataTable):
+    _pressed_cell: tuple[str, bool, int] | None = None
     _last_body_click: str | None = None
 
     class Open(Message):
@@ -133,18 +134,35 @@ class JobTable(DataTable):
         def control(self):
             return self.table
 
-    async def _on_click(self, event: events.Click):
-        previous_click = self._last_body_click
+    def reset_click(self):
+        self._pressed_cell = None
         self._last_body_click = None
+
+    def on_mouse_down(self, event: events.MouseDown):
+        self._pressed_cell = self._click_target(event)
+
+    def _click_target(self, event: events.MouseEvent):
         # Textual attaches table cell coordinates to the rendered cell's style.
         meta = event.style.meta
         row = meta.get("row", -1)
-        if not 0 <= row < self.row_count:
-            return
-        self.move_cursor(row=row, scroll=False)
-        row_id = self.ordered_rows[row].key.value
         column = meta.get("column", -1)
-        actions = column >= 0 and self.ordered_columns[column].key.value == "actions"
+        if 0 <= row < self.row_count and 0 <= column < len(self.columns):
+            row_id = self.ordered_rows[row].key.value
+            actions = self.ordered_columns[column].key.value == "actions"
+            return row_id, actions, event.button
+        return None
+
+    async def _on_click(self, event: events.Click):
+        event.prevent_default()
+        event.stop()
+        pressed, previous_click = self._pressed_cell, self._last_body_click
+        self.reset_click()
+        target = self._click_target(event)
+        if target is None or target != pressed:
+            return
+
+        row_id, actions, _ = target
+        self.move_cursor(row=self.get_row_index(row_id), scroll=False)
         menu = actions or event.button == 3
         # Textual chains clicks by screen position, which can move between rows.
         details = event.button == 1 and event.chain >= 2 and previous_click == row_id
@@ -152,8 +170,6 @@ class JobTable(DataTable):
             self.post_message(self.Open(self, row_id, menu))
         elif event.button == 1:
             self._last_body_click = row_id
-        event.prevent_default()
-        event.stop()
 
 
 class QueueTable(JobTable):
@@ -161,8 +177,15 @@ class QueueTable(JobTable):
         if event.key in ("up", "down", "pageup", "pagedown", "ctrl+home", "ctrl+end"):
             self.call_after_refresh(self.reveal_cursor)
 
-    def on_resize(self):
-        self.call_after_refresh(self.reveal_cursor)
+    def cursor_in_view(self):
+        if not self.has_focus or not self.row_count or self.screen is not self.app.screen:
+            return False
+        # Queue rows are one line tall and the column header stays fixed.
+        region = self.scrollable_content_region
+        top = region.y + self.header_height
+        y = top + self.cursor_row - self.scroll_offset.y
+        return (top <= y < region.bottom
+                and self.screen.find_widget(self).clip.contains(region.x, y))
 
     def reveal_cursor(self):
         if self.has_focus and self.row_count:
@@ -246,10 +269,14 @@ class Dashboard(Screen):
     def on_resize(self, event):
         self.set_class(event.size.width >= 120, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
-        self.call_after_refresh(self.app.refresh_views)
+        self.call_after_refresh(self.refresh_after_resize)
+
+    def refresh_after_resize(self):
+        self.app.refresh_views()
         queue = self.focused
         if isinstance(queue, QueueTable):
-            self.call_after_refresh(queue.reveal_cursor)
+            # Let the table lay out its resized columns before scrolling.
+            queue.call_after_refresh(queue.reveal_cursor)
 
     @on(Button.Pressed)
     def button_pressed(self, event):
@@ -333,7 +360,12 @@ class Dashboard(Screen):
                 lines[-1] = line
             else:
                 lines.append(part)
-        summary.update("\n".join(lines))
+        text = "\n".join(lines)
+        if text.count("\n") != summary.content.count("\n"):
+            table = self.query_one(QueueTable)
+            if table.cursor_in_view():
+                self.call_after_refresh(table.reveal_cursor)
+        summary.update(text)
 
     def update_notice(self, session):
         index, backend = session.index, session.backend

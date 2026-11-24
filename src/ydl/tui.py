@@ -2,9 +2,10 @@
 
 import asyncio
 
-from textual import on
+from textual import events, on
 from textual.app import App
 from textual.binding import Binding
+from textual.errors import NoWidget
 from textual.widgets import DataTable, Input, Select, TextArea
 
 from . import config
@@ -51,10 +52,25 @@ class YdlApp(App[int]):
         self.deferred_close = {}
         self.last_stage = None
         self.progress_timer = None
+        self._last_pressed_table: JobTable | None = None
         self.session = QueueSession(paths, disk or QueueFile(paths.state), self.changed, self.decide)
 
     def get_default_screen(self):
         return Dashboard()
+
+    async def on_event(self, event):
+        if isinstance(event, events.MouseDown) and not event.is_forwarded:
+            try:
+                widget, _ = self.get_widget_at(*event.screen_offset)
+            except NoWidget:
+                widget = None
+            table = widget if isinstance(widget, JobTable) else None
+            previous = self._last_pressed_table
+            if previous is not None and previous is not table:
+                # Preserve ordering with any clicks already queued for the table.
+                previous.call_later(previous.reset_click)
+            self._last_pressed_table = table
+        await super().on_event(event)
 
     def startup(self, dashboard):
         self.dashboard = dashboard

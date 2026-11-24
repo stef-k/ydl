@@ -11,7 +11,7 @@ from textual.widgets import Checkbox, RadioButton, Select, TabbedContent, Tabs
 
 from ydl import config, jobs, runner
 from ydl.models import BackendStatus, Decision, Event, Settings
-from ydl.tui_dialogs import AddURLs, Browse, RunnerPrompt, SettingsPanel
+from ydl.tui_dialogs import AddURLs, Browse, HelpPanel, RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
 
 from tui_pilot import PilotCase
@@ -19,12 +19,12 @@ from tui_pilot import PilotCase
 
 class RenderTests(PilotCase):
     @asynccontextmanager
-    async def populated_dashboard(self):
+    async def populated_dashboard(self, extra_rows=()):
         active = self.entry("GoaTrance&list=GoaPlaylist")
         completed = self.entry("NightCity")
         failed = replace(self.entry("Unavailable"), status="failed_before_plan")
         interrupted = replace(self.entry("Volume2&list=GoaVolume2"), status="interrupted")
-        self.disk.save([active, self.entry("Yesterday"), interrupted, completed, failed])
+        self.disk.save([active, self.entry("Yesterday"), interrupted, completed, failed, *extra_rows])
         store = jobs.JobStore(self.paths.state)
         settings = Settings("playlist", "0", False, self.output / "Goa Trance Vol. 2")
         track = jobs.make_item(1, "Volume2", "First track", True)
@@ -201,6 +201,13 @@ class RenderTests(PilotCase):
             self.assertIsInstance(app.screen, Details)
             self.assertEqual(app.screen.row_id, completed)
 
+    @staticmethod
+    async def send_mouse(pilot, x, y, *events):
+        # Use the app's mouse dispatch so Textual calculates the click chain.
+        for event in events:
+            pilot.app.post_message(event(None, x, y, 0, 0, 1, False, False, False))
+        await pilot.pause()
+
     async def test_live_summary_wrap_cannot_complete_a_double_click_on_another_row(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             await pilot.resize_terminal(84, 24)
@@ -208,20 +215,52 @@ class RenderTests(PilotCase):
             await self.wait_for(pilot, lambda: "Active 9/24" in self.screen_text(app))
             row_y = next(y for y, line in enumerate(self.rendered_lines(app)) if "✓ Night City Mix" in line)
 
-            async def click():
-                # Let Textual chain the clicks at the same screen coordinates.
-                for event_type in (MouseDown, MouseUp):
-                    app.post_message(event_type(None, 12, row_y, 0, 0, 1, False, False, False))
-                await pilot.pause()
-
             with patch.object(app, "CLICK_CHAIN_TIME_THRESHOLD", 5):
-                await click()
+                await self.send_mouse(pilot, 12, row_y, MouseDown, MouseUp)
                 self.assertEqual(app.selected, app.session.index.rows[3].id)
                 emit(replace(event, position=10))
                 await self.wait_for(pilot, lambda: "↻ Goa Trance Vol. 2" in self.rendered_lines(app)[row_y])
-                await click()
+                await self.send_mouse(pilot, 12, row_y, MouseDown, MouseUp)
                 self.assertIs(app.screen, app.dashboard)
                 self.assertEqual(app.selected, app.session.index.rows[2].id)
+
+    async def test_live_summary_wrap_invalidates_a_press_over_a_different_row(self):
+        async with self.populated_dashboard() as (app, pilot, emit, event):
+            await pilot.resize_terminal(84, 24)
+            emit(replace(event, position=9))
+            await self.wait_for(pilot, lambda: "Active 9/24" in self.screen_text(app))
+            row_y = next(y for y, line in enumerate(self.rendered_lines(app)) if "✓ Night City Mix" in line)
+            selected = app.selected
+
+            with patch.object(app, "CLICK_CHAIN_TIME_THRESHOLD", 5):
+                await self.send_mouse(pilot, 12, row_y, MouseDown)
+                emit(replace(event, position=10))
+                await self.wait_for(pilot, lambda: "↻ Goa Trance Vol. 2" in self.rendered_lines(app)[row_y])
+                await self.send_mouse(pilot, 12, row_y, MouseUp)
+                self.assertEqual(app.selected, selected)
+                await self.send_mouse(pilot, 12, row_y, MouseDown, MouseUp)
+                self.assertIs(app.screen, app.dashboard)
+                self.assertEqual(app.selected, app.session.index.rows[2].id)
+
+    async def test_help_click_cannot_complete_a_queue_double_click(self):
+        entries = [self.entry(str(number)) for number in range(10)]
+        self.disk.save(entries)
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            row_y = next(y for y, line in enumerate(self.rendered_lines(app)) if "○ Video 2 " in line)
+            with patch.object(app, "CLICK_CHAIN_TIME_THRESHOLD", 5):
+                await self.send_mouse(pilot, 16, row_y, MouseDown, MouseUp)
+                self.assertEqual(app.selected, entries[2].id)
+                await pilot.press("question_mark")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, HelpPanel) and app.screen.ready)
+                await self.send_mouse(pilot, 16, row_y, MouseDown, MouseUp)
+                self.assertIsInstance(app.screen, HelpPanel)
+                await pilot.press("escape")
+                self.assertIs(app.screen, app.dashboard)
+                await self.send_mouse(pilot, 16, row_y, MouseDown, MouseUp)
+                self.assertIs(app.screen, app.dashboard)
+                self.assertEqual(app.selected, entries[2].id)
 
     async def test_selection_stays_visible_when_live_progress_wraps_the_summary(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
@@ -240,6 +279,27 @@ class RenderTests(PilotCase):
             await pilot.pause()
             self.assertEqual(app.selected, selected)
             self.assertIn("× Video Unavailable", self.screen_text(app))
+
+    async def test_live_summary_wrap_preserves_a_manually_scrolled_queue(self):
+        extra_rows = [self.entry(f"Extra{number:02}") for number in range(20)]
+        async with self.populated_dashboard(extra_rows) as (app, pilot, emit, event):
+            await pilot.resize_terminal(86, 24)
+            emit(replace(event, position=9))
+            queue = app.dashboard.query_one("#queue")
+            summary = app.dashboard.query_one("#queue-summary")
+            await self.wait_for(pilot, lambda: "Active 9/24" in self.screen_text(app) and summary.region.height == 1)
+            selected = app.selected
+            await pilot._post_mouse_events([MouseScrollDown], queue, offset=(12, 2), times=3)
+            await self.wait_for(pilot, lambda: "Video Extra01" in self.screen_text(app))
+            offset = queue.scroll_offset.y
+            self.assertGreater(offset, 0)
+            self.assertNotIn("▶ Goa Trance Collection", self.screen_text(app))
+
+            emit(replace(event, position=10))
+            await self.wait_for(pilot, lambda: summary.region.height == 2)
+            await pilot.pause()
+            self.assertEqual(queue.scroll_offset.y, offset)
+            self.assertEqual(app.selected, selected)
 
     async def test_long_restored_queue_keeps_wide_footer_visible(self):
         self.disk.save([self.entry(str(number)) for number in range(30)])
