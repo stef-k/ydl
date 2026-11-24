@@ -16,7 +16,8 @@
   the warning after a successful Recheck, and keep queue counts readable at
   compact terminal widths.
 - Keep the focused queue row visible during keyboard navigation and terminal
-  resizing when the queue summary wraps.
+  resizing, including when live progress wraps the queue summary. Keep the
+  table in place when clicking a queue row so double-click opens that job.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.

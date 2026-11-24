@@ -191,7 +191,6 @@ class YdlApp(App[int]):
         if table.row_count and table.ordered_rows[table.cursor_row].key == event.row_key:
             self.selected = event.row_key.value
             self.dashboard.position = table.cursor_row
-            self.dashboard.reveal_focused_queue()
 
     @on(DataTable.RowSelected, "#queue")
     def row_entered(self, event):

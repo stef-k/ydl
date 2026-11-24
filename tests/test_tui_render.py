@@ -143,6 +143,8 @@ class RenderTests(PilotCase):
     async def test_keyboard_selection_stays_visible_with_a_wrapped_queue_summary(self):
         async with self.populated_dashboard() as (app, pilot, _, _):
             queue = app.dashboard.query_one("#queue")
+            await pilot.resize_terminal(100, 24)
+            await pilot.pause()
             await pilot.press("ctrl+end")
             await pilot.wait_for_animation()
             await pilot.pause()
@@ -162,6 +164,41 @@ class RenderTests(PilotCase):
                     await pilot.wait_for_animation()
                     await pilot.pause()
                     self.assertIn("× Video", self.screen_text(app))
+
+    async def test_double_click_opens_the_clicked_row_in_a_partially_visible_queue(self):
+        async with self.populated_dashboard() as (app, pilot, _, _):
+            await pilot.resize_terminal(100, 24)
+            await pilot.press("ctrl+end")
+            await pilot.resize_terminal(80, 20)
+            await pilot.pause()
+            summary = app.dashboard.query_one("#queue-summary")
+            await pilot._post_mouse_events([MouseScrollUp], summary, offset=(1, 0))
+            await pilot.wait_for_animation()
+            await pilot.pause()
+
+            row_y = next(y for y, line in enumerate(self.rendered_lines(app)) if "✓ Night City Mix" in line)
+            completed = app.session.index.rows[3].id
+            self.assertTrue(await pilot.double_click(offset=(12, row_y)))
+            self.assertIsInstance(app.screen, Details)
+            self.assertEqual(app.screen.row_id, completed)
+
+    async def test_selection_stays_visible_when_live_progress_wraps_the_summary(self):
+        async with self.populated_dashboard() as (app, pilot, emit, event):
+            await pilot.resize_terminal(84, 24)
+            emit(replace(event, position=9))
+            await self.wait_for(pilot, lambda: "Active 9/24" in self.screen_text(app))
+            await pilot.press("ctrl+end")
+            await pilot.wait_for_animation()
+            await pilot.pause()
+            selected = app.selected
+            self.assertIn("× Video Unavailable", self.screen_text(app))
+
+            emit(replace(event, position=10))
+            summary = app.dashboard.query_one("#queue-summary")
+            await self.wait_for(pilot, lambda: summary.region.height == 2)
+            await pilot.pause()
+            self.assertEqual(app.selected, selected)
+            self.assertIn("× Video Unavailable", self.screen_text(app))
 
     async def test_long_restored_queue_keeps_wide_footer_visible(self):
         self.disk.save([self.entry(str(number)) for number in range(30)])

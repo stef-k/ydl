@@ -147,6 +147,21 @@ class JobTable(DataTable):
         event.stop()
 
 
+class QueueTable(JobTable):
+    def on_key(self, event: events.Key):
+        if event.key in ("up", "down", "pageup", "pagedown", "ctrl+home", "ctrl+end"):
+            self.call_after_refresh(self.reveal_cursor)
+
+    def on_resize(self):
+        self.call_after_refresh(self.reveal_cursor)
+
+    def reveal_cursor(self):
+        if self.has_focus and self.row_count:
+            # The cursor can be clipped by either the table or the workspace.
+            self.move_cursor()
+            self.scroll_visible(animate=False)
+
+
 class Dashboard(Screen):
     VERTICAL_BREAKPOINTS = [(35, "-tall")]
 
@@ -198,8 +213,8 @@ class Dashboard(Screen):
                     yield FormError("form-error")
             with Vertical(id="queue-panel", classes="panel"):
                 yield Static("Queue · 0 URLs", id="queue-summary", markup=False)
-                yield JobTable(id="queue", cursor_type="row", show_row_labels=False,
-                               cursor_foreground_priority="renderable")
+                yield QueueTable(id="queue", cursor_type="row", show_row_labels=False,
+                                 cursor_foreground_priority="renderable")
             with Vertical(id="action-area"):
                 with Vertical(id="transfer-panel", classes="panel"):
                     yield Static("Active transfer", id="transfer-title", classes="section-title", markup=False)
@@ -223,14 +238,6 @@ class Dashboard(Screen):
         self.set_class(event.size.width >= 120, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.app.refresh_views)
-        self.call_after_refresh(self.reveal_focused_queue)
-
-    def reveal_focused_queue(self):
-        table = self.query_one("#queue", JobTable)
-        if self.focused is table and table.row_count:
-            # Reveal the selected row inside the table and keep the table above the footer.
-            table.move_cursor()
-            self.query_one("#workspace", VerticalScroll).scroll_to_widget(table, animate=False)
 
     @on(Button.Pressed)
     def button_pressed(self, event):
