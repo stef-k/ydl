@@ -118,6 +118,26 @@ class RenderTests(PilotCase):
             self.assertTrue(app.session.selected_retry(row.id))
             self.assertIn("Resume queue", rendered)
 
+    async def test_blocked_playlist_row_shows_the_saved_output_folder(self):
+        row = replace(self.entry("Track&list=SavedList", scope="playlist"), status="failed")
+        self.disk.save([row])
+        destination = self.output / "Saved playlist"
+        destination.write_text("The saved path is occupied by a file")
+        store = jobs.JobStore(self.paths.state)
+        settings = Settings("playlist", "0", False, destination)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, settings, [jobs.make_item(1, "Track", "Song", False)],
+                                      enqueued_base=row.output))
+
+        app = self.app()
+        async with app.run_test(size=(150, 38)) as pilot:
+            await self.ready(pilot, app)
+            await pilot.pause()
+            line = next(line for line in self.rendered_lines(app) if "Saved playlist" in line)
+            self.assertIn("Needs attention", line)
+            self.assertFalse(app.session.selected_retry(row.id))
+            self.assertIn("Saved playlist/", line)
+
     async def test_rendered_transfer_keeps_metrics_below_wide_title(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             lines = self.rendered_lines(app)
