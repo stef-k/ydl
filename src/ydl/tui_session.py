@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import jobs, runner
 from .models import Event, YdlError
-from .tui_queue import STARTABLE, QueueIndex, View, classify, missing_plan_message
+from .tui_queue import STARTABLE, QueueIndex, View, classify, missing_plan_message, planned_hint
 from .tui_backend import BackendReadiness, backend_key
 
 
@@ -244,12 +244,12 @@ class QueueSession:
     async def inspect(self, row_id, entry=None):
         if self.closing or (entry is None and self.index.row(row_id) is not None):
             return None
-        # A recovered row can supersede a Recent jobs read that still holds the job lock.
-        if entry is not None and (recent := self.inspections.get(row_id)) is not None:
-            if not recent.cancelling():
-                recent.cancel()
-            await asyncio.wait((recent,))
-            if self.closing:
+        if (previous := self.inspections.get(row_id)) is not None:
+            # A recovered row supersedes a Recent jobs read. A removed row lets its recheck finish.
+            if entry is not None and not previous.cancelling():
+                previous.cancel()
+            await asyncio.wait((previous,))
+            if self.closing or (entry is None and self.index.row(row_id) is not None):
                 return None
         task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
         self.inspections[row_id] = task
@@ -269,7 +269,8 @@ class QueueSession:
         diagnostic = "\n".join(result.diagnostics)
         observed = await self.inspect(entry.id, entry)
         if result.destination_changed and not result.output_conflict:
-            hint = "interrupted" if entry.status in ("pending", "cancelled") else entry.status
+            # The runner reports a destination change in its result only after admitting a plan.
+            hint = planned_hint(entry.status)
             return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", observed, result.attention)
         hint = "failed" if result.failed else "complete"
         if result.attention:

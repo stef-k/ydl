@@ -58,6 +58,7 @@ class RecentJobs(Panel):
     def __init__(self):
         super().__init__()
         self.ids = []
+        self.refresh_ids = set()
         self.selected = None
         self.is_loading = True
 
@@ -80,28 +81,37 @@ class RecentJobs(Panel):
     async def load_jobs(self):
         session = self.app.session
         try:
-            self.ids = await asyncio.to_thread(session.store.recent_ids)
+            ids = await asyncio.to_thread(session.store.recent_ids)
         except OSError as exc:
             if self.is_mounted:
                 self.query_one("#recent-note", Static).update(clean(f"Cannot list {session.store.directory}: {exc}"))
             return
         if not self.is_mounted or session.closing:
             return
+        self.ids = ids
+        self.refresh_ids = set(ids)
         self.is_loading = False
         table = self.query_one(JobTable)
         self.selected = self.ids[0] if self.ids else None
-        refresh = {}
         for row_id in self.ids:
             table.add_row(row_id, "Verifying", key=row_id)
-            if session.index.row(row_id) is not None or session.external_retry_id == row_id:
-                continue
-            # A verification can outlive the panel that requested it.
-            if row_id in session.external and session.external[row_id] is None:
-                continue
-            refresh[row_id] = session.external.get(row_id)
-            session.external[row_id] = None
         self.sync()
-        await asyncio.gather(*(self.verify(session, row_id, previous) for row_id, previous in refresh.items()))
+
+    def refresh_external(self, session, row_id):
+        if session.index.row(row_id) is not None:
+            self.refresh_ids.add(row_id)
+            return
+        if row_id not in self.refresh_ids:
+            return
+        self.refresh_ids.remove(row_id)
+        if session.closing or session.external_retry_id == row_id:
+            return
+        # A verification can outlive the panel that requested it.
+        if row_id in session.external and session.external[row_id] is None:
+            return
+        previous = session.external.get(row_id)
+        session.external[row_id] = None
+        self.app.own(self.verify(session, row_id, previous))
 
     async def verify(self, session, row_id, previous):
         result = await session.inspect(row_id)
@@ -128,8 +138,10 @@ class RecentJobs(Panel):
 
     def sync(self):
         super().sync()
+        session = self.app.session
         table = self.query_one(JobTable)
         for row_id in self.ids:
+            self.refresh_external(session, row_id)
             title, status, _ = self.row_info(row_id)
             table.update_cell(row_id, "title", Text(clip(clean(title), 31)))
             table.update_cell(row_id, "status", Text(status))
@@ -137,7 +149,7 @@ class RecentJobs(Panel):
         fallback = "Reading saved jobs…" if self.is_loading else "No saved jobs" if not self.ids else ""
         self.query_one("#recent-note", Static).update(clean(report or fallback))
         self.query_one("#recent-details", Button).disabled = not self.selected
-        self.query_one("#recent-retry", Button).disabled = not can_retry(self.app.session, self.selected)
+        self.query_one("#recent-retry", Button).disabled = not can_retry(session, self.selected)
 
     @on(DataTable.RowHighlighted)
     def highlight(self, event):

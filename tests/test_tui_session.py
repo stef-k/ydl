@@ -546,6 +546,30 @@ while True:
         await session.index.recheck(row.id)
         self.assertEqual(session.index.view(row.id).status, "Interrupted")
 
+    async def test_destination_change_after_preplan_retry_keeps_plan_required(self):
+        row = self.entry("A", status="failed_before_plan")
+        session = await self.start(row)
+        self.offline_media()
+
+        async def replace_destination(*_):
+            self.output.rename(self.root / "original-output")
+            self.output.mkdir()
+
+        with patch.object(media, "metadata", return_value={"title": "Media title"}), patch.object(
+                media, "verify_output", side_effect=replace_destination):
+            await self.run_queue(session, "failed")
+        self.assertEqual(session.index.view(row.id).status, "Needs attention")
+        self.store.path(row.id).rename(self.root / "original-plan.json")
+        await session.stop(quitting=True)
+
+        reopened = self.make_session()
+        await reopened.open()
+        view = reopened.index.view(row.id)
+        self.assertEqual(view.status, "Needs attention")
+        self.assertIn("Add to start fresh", view.diagnostic)
+        self.assertFalse(reopened.candidates("failed"))
+        self.assertEqual(self.disk.read()[0].status, "failed")
+
     async def test_first_video_conflict_records_target_and_keeps_processing(self):
         claimed, last = self.entry("List", keep_video=True), self.entry("last")
         plan = self.plan(claimed, "blocked", "nextTrack", scope="playlist")

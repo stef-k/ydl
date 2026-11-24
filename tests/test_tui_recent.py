@@ -2,18 +2,58 @@
 
 import asyncio
 from dataclasses import replace
+from threading import Event as ThreadEvent
 from unittest.mock import patch
 
-from textual.widgets import Button
+from textual.widgets import Button, DataTable
 
 from ydl import jobs, runner
 from ydl.models import Result, Settings
+from ydl.tui_dialogs import Confirm
 from ydl.tui_jobs import Details, RecentJobs
 
 from tui_pilot import PilotCase
 
 
 class RecentJobsTests(PilotCase):
+    async def test_recent_job_is_verified_when_its_queue_row_is_removed(self):
+        row = replace(self.entry("Removed"), status="failed")
+        store = jobs.JobStore(self.paths.state)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, Settings("single", "0", False, self.output),
+                                      [jobs.make_item(1, "Removed", "Saved track", False)],
+                                      enqueued_base=row.output))
+        self.disk.save([row])
+        saving, release = ThreadEvent(), ThreadEvent()
+        save = self.disk.save
+
+        def finish_removal(rows):
+            if not rows:
+                saving.set()
+                if not release.wait(10):
+                    raise TimeoutError("Test did not release the removal save")
+            save(rows)
+
+        app = self.app()
+        with patch.object(self.disk, "save", side_effect=finish_removal):
+            async with app.run_test(size=(100, 30)) as pilot:
+                try:
+                    await self.ready(pilot, app)
+                    app.dashboard.query_one("#queue").focus()
+                    await pilot.press("delete")
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm))
+                    self.assertTrue(await pilot.click("#confirm"))
+                    await self.wait_for(pilot, saving.is_set)
+                    self.assertTrue(await pilot.click("#recent"))
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, RecentJobs) and not app.screen.is_loading)
+                    table = app.screen.query_one(DataTable)
+                    self.assertEqual(table.get_cell(row.id, "status").plain, "Failed")
+                finally:
+                    release.set()
+                await self.wait_for(pilot, lambda: "Incomplete" in self.screen_text(app))
+                self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+                self.assertEqual(self.disk.read(), [])
+
     async def test_queue_linked_retry_does_not_compete_with_recent_verification(self):
         row = replace(self.entry("Linked"), status="failed")
         self.disk.save([row])

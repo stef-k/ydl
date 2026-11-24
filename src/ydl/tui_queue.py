@@ -109,15 +109,20 @@ def missing_plan_message(store, row_id):
     return f"Missing saved plan at {store.path(row_id)}. Restore it and Recheck, or use Add to start fresh with a new ID."
 
 
+def planned_hint(hint):
+    if hint == "failed_before_plan":
+        return "failed"
+    if hint in ("pending", "cancelled"):
+        return "interrupted"
+    return hint
+
+
 def classify(entry, inspection, store):
     hint = entry.status
     if inspection.state == "complete":
         return "complete", View("Complete", inspection)
     if inspection.job is not None:
-        if hint == "failed_before_plan":
-            hint = "failed"
-        elif hint in ("pending", "cancelled"):
-            hint = "interrupted"
+        hint = planned_hint(hint)
     if inspection.state == "blocked":
         return hint, View("Needs attention", inspection, inspection.diagnostic)
     if inspection.state == "unfinished":

@@ -8,6 +8,8 @@
   and refresh job details after Recheck.
 - Release superseded Recent jobs verification locks during queue recovery and
   show saved plan details after a destination change.
+- Keep a saved plan required after a destination change and refresh Recent jobs
+  when a queue entry is removed.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
