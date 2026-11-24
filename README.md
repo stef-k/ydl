@@ -1,15 +1,15 @@
 # ydl
 
 **Save a YouTube video or an entire playlist as MP3 from your Linux terminal.**
-Give `ydl` a YouTube link and it downloads and converts the audio for you.
-Files go to `~/Downloads/ydl/` by default. You can also keep the video or
-resume an interrupted download.
+Use the command line for quick downloads, or open the interactive terminal
+queue to manage a batch. Files go to `~/Downloads/ydl/` by default. You can
+also keep the video or resume an interrupted download.
 
-[Install](#install-on-linux-mint-or-ubuntu) · [First download](#download-your-first-mp3) · [Switches](#common-switches) · [Defaults](#save-your-defaults)
+[Install](#install-on-linux-mint-or-ubuntu) · [Terminal queue](#use-the-terminal-queue) · [Command line](#download-your-first-mp3) · [Switches](#common-switches) · [Defaults](#save-your-defaults)
 
 ## Install on Linux Mint or Ubuntu
 
-### 1. Check Python and install FFmpeg
+### 1. Check Python and install FFmpeg and Git
 
 You need Python 3.11 or newer. The `ffmpeg` package provides both FFmpeg and
 FFprobe.
@@ -17,21 +17,15 @@ FFprobe.
 ```sh
 python3 --version
 sudo apt update
-sudo apt install ffmpeg
+sudo apt install ffmpeg git
 ```
 
 ### 2. Get the source
 
-This is a private repository. Use a GitHub account with access. If you have
-the GitHub CLI, sign in with `gh auth login` if needed, then run the following.
-
 ```sh
-gh repo clone stef-k/ydl
+git clone https://github.com/stef-k/ydl.git
 cd ydl
 ```
-
-With GitHub SSH access, you can also use
-`git clone git@github.com:stef-k/ydl.git` followed by `cd ydl`.
 
 ### 3. Install the command with pipx
 
@@ -46,6 +40,10 @@ sudo apt install pipx
 pipx install .
 pipx ensurepath
 ```
+
+To install the terminal queue too, use `pipx install '.[tui]'` in place of
+`pipx install .`. If you already installed ydl with pipx, run
+`pipx install --force '.[tui]'` from the checkout.
 
 If your newer Python is installed under a separate name, use a command such
 as `pipx install --python python3.11 .` for the install step. If your `apt`
@@ -77,6 +75,8 @@ mkdir -p "$HOME/.local/bin"
 ln -s "$HOME/.local/share/ydl-venv/bin/ydl" "$HOME/.local/bin/ydl"
 ```
 
+To include the terminal queue, use `-m pip install '.[tui]'` for the install step.
+
 If `~/bin` is already on your PATH, you can use it in the last two commands
 instead. If you use `~/.local/bin` and it is missing from your PATH, run
 `export PATH="$HOME/.local/bin:$PATH"`. Add that line to `~/.bashrc` to keep
@@ -84,29 +84,61 @@ it in future interactive Bash sessions.
 
 </details>
 
+### First-run setup
+
+`ydl` installs and manages its own copy of yt-dlp in your home directory.
+yt-dlp uses **Node.js 22+** or **Deno 2.3+** to get media links from YouTube's
+player. If you already have a compatible runtime on your PATH, `ydl` uses it.
+Otherwise, answer **Yes** at the Deno prompt to install a copy for your account.
+
 ## Use the terminal queue
 
-From the checkout, install the interactive frontend with `pipx install '.[tui]'`.
-If ydl is already installed with pipx, use `pipx install --force '.[tui]'`.
-Then run `ydl tui` in a terminal. You can also pass a URL to prefill the draft.
+Install the `tui` extra as described above, then open the queue in your terminal.
 
-1. Paste one YouTube link per line, choose the quality and destination, then
-   use **Add to Queue** and review the batch.
-2. Select **Start queue**. For links with both a video and a playlist, Auto
-   opens a scope chooser with **This video** selected.
-3. Use **Stop queue** or **Ctrl+C** to interrupt work. Reopen with `ydl tui`
-   and use **Resume queue** to continue in saved order.
+```sh
+ydl tui
+# Or open with a link already in the editor
+ydl tui 'https://www.youtube.com/watch?v=VIDEO_ID'
+```
 
-Open a row’s **⋮** menu or press **F2** on the queue to reorder pending entries,
-recheck saved work, or view job details and logs. **Retry failed** attempts failed
-entries once in queue order. **Help** lists the keyboard shortcuts.
+### Start a download
 
-Keep the output directory in place during downloads. The queue is stored in
-`$XDG_STATE_HOME/ydl/tui-queue.json` (usually `~/.local/state/ydl/tui-queue.json`).
-If a queue save needs recovery, use **Recover queue** after addressing the error.
-Scroll long notices with the mouse wheel or press Tab to focus the notice and
-use the arrow keys.
-Removing a queue entry preserves its output and saved job files.
+1. Paste one YouTube link per line. Choose **Scope**, **MP3 quality**, and whether
+   to **Keep video**. Type a folder in **Save to** or select it with **Browse**.
+2. Select **Add to Queue**. Review or edit the links in **Add URLs**, then
+   select **Add**.
+3. Select **Start queue**. The queue runs one entry at a time and shows the
+   current track and available progress, speed, and time estimates in
+   **Active transfer**.
+
+**Auto** scope downloads a playlist-only link as a playlist. For a link to a
+video inside a playlist, it opens a chooser with **This video** selected.
+Choose **Entire playlist** to download the full list. Playlists with 51 or more
+entries or an unknown size ask for confirmation.
+
+### Manage the queue and saved jobs
+
+- Use **Stop queue** or **Ctrl+C** to stop. The queue reopens idle with its
+  saved entries. Select **Resume queue** to continue an interrupted job.
+- Open a row’s **⋮** menu, or focus the queue and press **F2**, to move pending
+  entries, recheck a job, or remove an entry. Removing rows and using
+  **Clear completed** preserve the media, saved jobs, and logs.
+- Double-click a row or select it and press **Enter** to open **Job Details**.
+  The **Log** tab shows what happened, and **Info** shows the saved destination.
+  If a row shows **Needs attention**, read the diagnostic, fix the problem, and
+  choose **Recheck** from its row menu.
+- Use **Retry failed** to attempt failed rows in queue order, or retry one row
+  from its menu. **Recent jobs** gives access to saved jobs, including eligible
+  jobs started from the command line.
+
+Open **Settings** to change defaults for future entries and manage yt-dlp
+updates. Use **Tab** and **Shift+Tab** to move focus, arrow keys to navigate,
+and **Enter** to activate a focused control. Open **Help** for the full list
+of shortcuts. Use **Quit** or **Ctrl+Q** to close the app.
+
+If a queue storage error appears, scroll the notice to read it, address the
+error, and choose **Recover queue**. The queue file is usually at
+`~/.local/state/ydl/tui-queue.json`, or under `$XDG_STATE_HOME/ydl/` if set.
 
 ## Download your first MP3
 
@@ -116,12 +148,6 @@ when the link contains `&`.
 ```sh
 ydl 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
-
-On your first download, `ydl` installs its own copy of yt-dlp in your home
-directory. yt-dlp's bundled solver uses **Node.js 22+** or **Deno 2.3+** to
-get media links from YouTube's player. If you already have a compatible
-runtime on your PATH, `ydl` uses it. Otherwise, answer **Yes** at the Deno
-prompt to install a private copy for your account.
 
 Press Enter at **Keep original video file(s)?** to accept the default of
 saving only an MP3. The settings stay on one line while the line below updates

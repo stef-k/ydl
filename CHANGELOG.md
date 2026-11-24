@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 - 2026-11-24
 
 - Add the optional `ydl tui` frontend with a persistent serial queue, playlist
   choices, responsive settings and job details, and saved-job retry.
+- Show a saved playlist's folder in the queue when its destination needs attention.
 - Preserve recent-job retry results, reuse queue verification for linked jobs,
   and refresh job details after Recheck.
 - Release superseded Recent jobs verification locks during queue recovery and

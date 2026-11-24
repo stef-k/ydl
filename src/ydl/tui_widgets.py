@@ -79,11 +79,10 @@ def row_metadata(entry, view, plan):
     observed = view.inspection
     job = observed.job if observed else None
     if job:
-        kind = f"Playlist ({len(job.items)})" if job.scope == "playlist" else "Video"
-        output = observed.output.name if observed.output else "—"
-        if job.scope == "playlist" and observed.output:
-            output += "/"
-        return job_title(job), kind, output
+        title = job_title(job)
+        if job.scope == "playlist":
+            return title, f"Playlist ({len(job.items)})", f"{title}/"
+        return title, "Video", observed.output.name if observed.output else "—"
     if plan and plan.settings:
         settings = plan.settings
         kind = f"Playlist ({plan.total})" if settings.scope == "playlist" else "Video"
