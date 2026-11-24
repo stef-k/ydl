@@ -105,8 +105,9 @@ class View:
         return self.inspection is not None and self.inspection.job is not None
 
 
-def missing_plan_message(store, row_id):
-    return f"Missing saved plan at {store.path(row_id)}. Restore it and Recheck, or use Add to start fresh with a new ID."
+def missing_plan_message(store, row_id, *, check_again="Recheck"):
+    return (f"Missing saved plan at {store.path(row_id)}. Restore it and {check_again}, "
+            "or use Add to start fresh with a new ID.")
 
 
 def planned_hint(hint):

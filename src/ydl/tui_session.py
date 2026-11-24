@@ -254,7 +254,11 @@ class QueueSession:
         task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
         self.inspections[row_id] = task
         try:
-            return await task
+            observation = await task
+            if entry is None and observation.state == "missing":
+                diagnostic = missing_plan_message(self.store, row_id, check_again="reopen Recent jobs")
+                return replace(observation, diagnostic=diagnostic)
+            return observation
         except asyncio.CancelledError:
             if not (self.closing or (entry is None and self.index.row(row_id) is not None)):
                 raise

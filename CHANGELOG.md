@@ -10,6 +10,8 @@
   show saved plan details after a destination change.
 - Keep a saved plan required after a destination change and refresh Recent jobs
   when a queue entry is removed.
+- Explain missing saved plans in Recent jobs and keep external retries out of
+  the queue summary.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.

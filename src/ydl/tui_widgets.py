@@ -280,9 +280,9 @@ class Dashboard(Screen):
         self.update_notice(session)
         counts = Counter(session.index.view(row.id).status for row in session.index.rows)
         event = session.events.get(session.active_id)
-        active = f" · Active {event.position}/{event.total}" if event and event.position else ""
-        if counts["Active"] and not active:
-            active = " · 1 Active"
+        active = ""
+        if counts["Active"]:
+            active = f" · Active {event.position}/{event.total}" if event and event.position else " · 1 Active"
         interrupted = f" · {counts['Interrupted']} Interrupted" if counts["Interrupted"] else ""
         self.query_one("#queue-summary", Static).update(f"Queue · {len(session.index.rows)} URLs{active} · "
                                                         f"{counts['Pending']} Pending{interrupted} · "
