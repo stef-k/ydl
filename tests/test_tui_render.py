@@ -23,8 +23,13 @@ class RenderTests(PilotCase):
         active = self.entry("GoaTrance&list=GoaPlaylist")
         completed = self.entry("NightCity")
         failed = replace(self.entry("Unavailable"), status="failed_before_plan")
-        self.disk.save([active, self.entry("Yesterday"), self.entry("Pending&list=GoaVolume2"), completed, failed])
+        interrupted = replace(self.entry("Volume2&list=GoaVolume2"), status="interrupted")
+        self.disk.save([active, self.entry("Yesterday"), interrupted, completed, failed])
         store = jobs.JobStore(self.paths.state)
+        settings = Settings("playlist", "0", False, self.output / "Goa Trance Vol. 2")
+        track = jobs.make_item(1, "Volume2", "First track", True)
+        with store.claim(interrupted.id, new=True):
+            store.save(jobs.Job.create(interrupted.id, settings, [track], enqueued_base=interrupted.output))
         item = jobs.make_item(1, "NightCity", "Night City Mix", False)
         media_file = self.output / f"{item.stem}.mp3"
         media_file.write_bytes(b"saved MP3")
@@ -116,6 +121,10 @@ class RenderTests(PilotCase):
     async def test_rendered_transfer_keeps_metrics_below_wide_title(self):
         async with self.populated_dashboard() as (app, pilot, emit, event):
             lines = self.rendered_lines(app)
+            summary = app.dashboard.query_one("#queue-summary")
+            header = " ".join(lines[summary.region.y:summary.region.bottom])
+            for value in ("5 URLs", "Active 3/24", "1 Pending", "1 Interrupted", "1 Complete", "1 Failed"):
+                self.assertIn(value, header)
             title = next(line for line in lines if "Track 03" in line)
             self.assertIn("Downloading", title)
             self.assertIn("Playlist 3/24", title)

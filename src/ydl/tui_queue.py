@@ -269,7 +269,11 @@ class QueueIndex:
         if self.row(entry.id) is not None:
             self.views[entry.id] = view
             self.changed()
-        return replace(entry, status=hint)
+        diagnostic = entry.diagnostic
+        # Older versions saved the missing-plan notice as the last attempt diagnostic.
+        if observation.job is not None and diagnostic == missing_plan_message(self.store, entry.id):
+            diagnostic = ""
+        return replace(entry, status=hint, diagnostic=diagnostic)
 
     async def recover(self):
         self.recovering = True

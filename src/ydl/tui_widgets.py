@@ -278,21 +278,35 @@ class Dashboard(Screen):
         color = "#ff7c85" if backend.state == "Unavailable" else "#a6daae" if backend.version else "#c6ddff"
         self.query_one("#backend-status", Static).update(Text(format_backend(backend), style=color))
         self.update_notice(session)
-        counts = Counter(session.index.view(row.id).status for row in session.index.rows)
         event = session.events.get(session.active_id)
-        active = ""
-        if counts["Active"]:
-            active = f" · Active {event.position}/{event.total}" if event and event.position else " · 1 Active"
-        interrupted = f" · {counts['Interrupted']} Interrupted" if counts["Interrupted"] else ""
-        self.query_one("#queue-summary", Static).update(f"Queue · {len(session.index.rows)} URLs{active} · "
-                                                        f"{counts['Pending']} Pending{interrupted} · "
-                                                        f"{counts['Complete']} Complete · {counts['Failed']} Failed")
+        self.update_queue_summary(session.index, event)
         plan = session.plans.get(session.active_id)
         title = f"Active transfer · {clean(plan.title)}" if plan and plan.title else "Active transfer"
         self.query_one("#transfer-title", Static).update(title)
         bar_width = min(48, max(18, self.size.width // 4))
         self.query_one("#transfer", Static).update(
             transfer_text(event, "Preparing backend…" if session.busy else "", bar_width))
+
+    def update_queue_summary(self, index, event):
+        counts = Counter(index.view(row.id).status for row in index.rows)
+        parts = [f"Queue · {len(index.rows)} URLs"]
+        if counts["Active"]:
+            parts.append(f"Active {event.position}/{event.total}" if event and event.position else "1 Active")
+        parts.append(f"{counts['Pending']} Pending")
+        if counts["Interrupted"]:
+            parts.append(f"{counts['Interrupted']} Interrupted")
+        parts.extend((f"{counts['Complete']} Complete", f"{counts['Failed']} Failed"))
+
+        summary = self.query_one("#queue-summary", Static)
+        width = summary.content_size.width or self.size.width
+        lines = [parts[0]]
+        for part in parts[1:]:
+            line = f"{lines[-1]} · {part}"
+            if len(line) <= width:
+                lines[-1] = line
+            else:
+                lines.append(part)
+        summary.update("\n".join(lines))
 
     def update_notice(self, session):
         index, backend = session.index, session.backend
@@ -343,8 +357,8 @@ class Dashboard(Screen):
         rows = session.index.rows
         panel = self.query_one("#queue-panel", Vertical)
         # The wide queue uses the available space up to its last row.
-        # Its height includes the table header, one summary line, and panel borders.
-        content_height = max(2, len(rows)) + table.header_height + 1 + panel.styles.gutter.height
+        summary_height = panel.query_one("#queue-summary", Static).content.count("\n") + 1
+        content_height = max(2, len(rows)) + table.header_height + summary_height + panel.styles.gutter.height
         panel.styles.max_height = content_height if self.has_class("-wide", "-standard-height") else None
         columns = self.columns(self.size.width or 80)
         cells = tuple((row.id, self.row_cells(session, row, i, columns)) for i, row in enumerate(rows, 1))

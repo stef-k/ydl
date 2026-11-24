@@ -221,9 +221,10 @@ class QueueSession:
             return replace(entry, status=hint, diagnostic=diagnostic), display
         if isinstance(exc, jobs.MissingPlan):
             diagnostic = missing_plan_message(self.store, entry.id)
+            return entry, View("Needs attention", diagnostic=diagnostic)
         if isinstance(exc, runner.UncertainPlan):
             return replace(entry, status="interrupted", diagnostic=diagnostic), View("Needs attention", diagnostic=diagnostic)
-        if isinstance(exc, (jobs.MissingPlan, jobs.JobBusy, jobs.PlanNeedsSync, jobs.DestinationChanged)):
+        if isinstance(exc, (jobs.JobBusy, jobs.PlanNeedsSync, jobs.DestinationChanged)):
             return replace(entry, diagnostic=diagnostic), View("Needs attention", view.inspection, diagnostic)
         return await self.attempt_outcome(entry, view, exc, diagnostic)
 
@@ -239,7 +240,12 @@ class QueueSession:
                   "failed": "Failed", "failed_before_plan": "Failed"}
         # The attempt may have published additional tracks before it stopped.
         observation = await self.inspect(entry.id, entry) if planned else None
-        return replace(entry, status=status, diagnostic=diagnostic), View(labels[status], observation)
+        settled = replace(entry, status=status, diagnostic=diagnostic)
+        if observation is not None and observation.state in ("missing", "blocked"):
+            _, display = classify(settled, observation, self.store)
+        else:
+            display = View(labels[status], observation)
+        return settled, display
 
     async def inspect(self, row_id, entry=None):
         if self.closing or (entry is None and self.index.row(row_id) is not None):
@@ -272,18 +278,18 @@ class QueueSession:
             return replace(entry, status="cancelled", diagnostic=diagnostic), View("Cancelled")
         diagnostic = "\n".join(result.diagnostics)
         observed = await self.inspect(entry.id, entry)
+        hint = "failed" if result.failed else "complete"
         if result.destination_changed and not result.output_conflict:
             # The runner reports a destination change in its result only after admitting a plan.
             hint = planned_hint(entry.status)
-            return replace(entry, status=hint, diagnostic=diagnostic), View("Needs attention", observed, result.attention)
-        hint = "failed" if result.failed else "complete"
-        if result.attention:
+        settled = replace(entry, status=hint, diagnostic=diagnostic)
+        if result.attention and (observed is None or observed.state != "missing"):
             display = View("Needs attention", observed, result.attention)
-        elif observed is None or observed.state == "missing":
+        elif observed is None:
             display = View("Failed" if result.failed else "Complete")
         else:
-            _, display = classify(replace(entry, status=hint), observed, self.store)
-        return replace(entry, status=hint, diagnostic=diagnostic), display
+            _, display = classify(settled, observed, self.store)
+        return settled, display
 
     async def run_external(self, row_id, prefs):
         self.operation = asyncio.create_task(self.invoke("external", row_id, prefs))

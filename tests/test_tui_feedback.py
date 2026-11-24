@@ -13,7 +13,7 @@ from ydl.models import Event, Result, Settings, YdlError
 from ydl.tui import YdlApp
 from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
-from ydl.tui_queue import QueueFile
+from ydl.tui_queue import QueueFile, missing_plan_message
 
 from tui_pilot import PilotCase
 
@@ -350,6 +350,32 @@ class FeedbackTests(PilotCase):
             self.assertNotIn(diagnostic, text)
             self.assertTrue(await pilot.click("#--content-tab-info-pane"))
             self.assertIn(f"Last diagnostic  {diagnostic}", self.screen_text(app))
+
+    async def test_recheck_clears_saved_missing_plan_diagnostic(self):
+        row = self.entry("A")
+        store = jobs.JobStore(self.paths.state)
+        diagnostic = missing_plan_message(store, row.id)
+        self.disk.save([replace(row, status="failed", diagnostic=diagnostic)])
+        app = self.app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await self.ready(pilot, app)
+            self.assertEqual(app.session.index.view(row.id).status, "Needs attention")
+            item = jobs.make_item(1, "A", "Track", False)
+            with store.claim(row.id, new=True):
+                store.save(jobs.Job.create(row.id, Settings("single", "0", False, self.output),
+                                          [item], enqueued_base=row.output))
+            app.dashboard.query_one("#queue").focus()
+            await pilot.press("f2")
+            await self.wait_for(pilot, lambda: isinstance(app.screen, RowMenu) and app.screen.ready)
+            self.assertTrue(await pilot.click("#recheck"))
+            await self.ready(pilot, app)
+            await pilot.press("enter")
+            await self.wait_for(pilot, lambda: isinstance(app.screen, Details) and app.screen.ready)
+            self.assertFalse(app.screen.query_one("#details-retry").disabled)
+            self.assertNotIn("Missing saved plan", self.screen_text(app))
+            self.assertTrue(await pilot.click("#--content-tab-info-pane"))
+            self.assertIn("Last diagnostic  —", self.screen_text(app))
+            self.assertEqual(self.disk.read()[0].diagnostic, "")
 
     async def test_settings_focuses_invalid_output_from_backend_tab(self):
         app = self.app()

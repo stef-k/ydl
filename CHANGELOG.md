@@ -12,6 +12,9 @@
   when a queue entry is removed.
 - Explain missing saved plans in Recent jobs and keep external retries out of
   the queue summary.
+- Block retry when a queued job loses its saved plan during settlement, clear
+  the warning after a successful Recheck, and keep queue counts readable at
+  compact terminal widths.
 - Keep job ownership until managed command trees finish cleanup after a stop
   or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.

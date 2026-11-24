@@ -42,6 +42,7 @@ FormError { height: auto; color: #ffb47a; }
 #form-error-scroll:focus { background: $ydl-input; }
 #queue-panel { height: 1fr; min-height: 6; }
 #queue-summary, .section-title { height: 1; background: #1c365d; color: #b4d9ff; text-style: bold; padding: 0 1; }
+#queue-summary { height: auto; }
 #transfer-title { text-wrap: nowrap; text-overflow: ellipsis; }
 #queue { height: 1fr; }
 JobTable { background: $ydl-panel; color: #e4efff; scrollbar-size: 1 1; }

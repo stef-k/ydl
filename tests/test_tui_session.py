@@ -382,24 +382,43 @@ while True:
     async def test_missing_plan_preserves_failed_category_and_explicit_add_remedy(self):
         row = self.entry("A", status="failed")
         self.plan(row, "A")
+        self.offline_media().side_effect = YdlError("Track unavailable")
         path = self.store.path(row.id)
-        original = path.read_bytes()
+        backup = self.root / "original-plan.json"
         session = await self.start(row)
         core_retry = runner.retry
+        inspect_job = jobs.inspect_job
 
-        async def removed(*args, **kwargs):
-            path.unlink()
+        async def remove_before_retry(*args, **kwargs):
+            path.rename(backup)
             return await core_retry(*args, **kwargs)
 
-        with patch.object(runner, "retry", side_effect=removed), patch.object(runner, "download") as download:
-            await self.run_queue(session, "failed")
-            download.assert_not_called()
-        self.assertEqual(self.disk.read()[0].status, "failed")
-        self.assertEqual(session.index.view(row.id).status, "Needs attention")
-        self.assertIn("Add to start fresh", session.index.view(row.id).diagnostic)
-        path.write_bytes(original)
-        await session.index.recheck(row.id)
-        self.assertEqual(session.index.view(row.id).status, "Failed")
+        async def remove_before_verification(*args, **kwargs):
+            path.rename(backup)
+            return await inspect_job(*args, **kwargs)
+
+        for boundary, remove_plan in (
+            ("dispatch", patch.object(runner, "retry", side_effect=remove_before_retry)),
+            ("settlement", patch.object(jobs, "inspect_job", side_effect=remove_before_verification)),
+        ):
+            with self.subTest(boundary=boundary):
+                with remove_plan, patch.object(runner, "download") as download:
+                    await self.run_queue(session, "failed")
+                    download.assert_not_called()
+                saved = self.disk.read()[0]
+                self.assertEqual(saved.status, "failed")
+                if boundary == "settlement":
+                    self.assertIn("Track unavailable", saved.diagnostic)
+                view = session.index.view(row.id)
+                self.assertEqual(view.status, "Needs attention")
+                self.assertIn(str(path), view.diagnostic)
+                self.assertIn("Add to start fresh", view.diagnostic)
+                session.arm("failed")
+                self.assertFalse(session.busy)
+                backup.rename(path)
+                await session.index.recheck(row.id)
+                self.assertEqual(session.index.view(row.id).status, "Failed")
+                self.assertTrue(session.index.view(row.id).planned)
 
     async def test_fully_verified_plan_without_completion_flag_and_changed_output(self):
         row = self.entry("A", status="active")
