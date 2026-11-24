@@ -27,6 +27,12 @@ class Address:
             return f"https://{self.host}/playlist?list={self.playlist}"
         return f"https://{self.host}/watch?v={self.video}"
 
+    def canonical(self):
+        if not self.video:
+            return self.url("playlist")
+        suffix = f"&list={self.playlist}" if self.playlist else ""
+        return self.url("single") + suffix
+
 
 def parse_url(url):
     error = YdlError("Enter a YouTube watch, Shorts, youtu.be or playlist URL.", 2)

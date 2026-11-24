@@ -1,11 +1,13 @@
 """The asynchronous download and retry entry points shared by frontends."""
 
+import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from . import backend, jobs, media
-from .config import output_path, quality_value
+from .config import SaveError, output_path, quality_value
 from .models import Decide, Decision, Emit, Event, Result, Settings, YdlError
 from .process import Log
 
@@ -28,6 +30,25 @@ class Dependencies:
     ffprobe: str
 
 
+class DecisionDismissed(Exception):
+    """The frontend dismissed this decision without selecting an answer."""
+
+
+class AttemptStopped(asyncio.CancelledError):
+    def __init__(self, *, planned):
+        self.planned = planned
+
+
+class AttemptDismissed(YdlError):
+    def __init__(self, *, planned):
+        super().__init__("Download prompt dismissed.")
+        self.planned = planned
+
+
+class UncertainPlan(jobs.PlanNeedsSync):
+    pass
+
+
 def yes_no(question, default="n"):
     return Decision(question, (("y", "Yes"), ("n", "No")), default)
 
@@ -40,7 +61,8 @@ async def scope_for(address, request, decide):
         return "playlist"
     if address.playlist and not request.yes and decide is not None:
         return await decide(Decision("Download", (("single", "This video"),
-                                                   ("playlist", "Entire playlist")), "single"))
+                                                   ("playlist", "Entire playlist")), "single",
+                                     "scope", address.video, address.playlist))
     return "single"
 
 
@@ -122,58 +144,107 @@ async def keep_video_for(request, prefs, decide):
     return await decide(yes_no("Keep original video file(s)?", "y" if prefs.keep_video else "n")) == "y"
 
 
-async def prepare(paths, prefs, decide, emit, log, *, no_update=False):
+async def prepare(paths, prefs, decide, emit, log, *, no_update=False, backend_ready=False):
     ffmpeg = backend.require_ffmpeg()
-    await backend.ensure_backend(paths.backend, prefs, no_update=no_update, emit=emit, log=log)
+    if not backend_ready:
+        await backend.ensure_backend(paths.backend, prefs, no_update=no_update, emit=emit, log=log)
     runtime = await backend.require_runtime(paths.data, decide, emit, log)
     return Dependencies(media.selected_command(paths.backend, runtime), ffmpeg["ffmpeg"], ffmpeg["ffprobe"])
 
 
-async def download(request: Download, paths, prefs, *, emit: Emit, decide: Decide | None = None):
+async def download(request: Download, paths, prefs, *, emit: Emit, decide: Decide | None = None,
+                   job_id=None, backend_ready=False):
     """Plan and execute a new download, or return after confirmation is declined."""
+    reserved = job_id is not None
+    job_id = job_id if reserved else uuid4().hex
+    store = jobs.JobStore(paths.state)
+    with store.claim(job_id, new=True):
+        if os.path.lexists(store.path(job_id)):
+            raise jobs.OccupiedPlan(f"Job ID already has a saved plan: {store.path(job_id)}")
+        try:
+            prepared = await build_job(request, paths, prefs, job_id, reserved, emit, decide, backend_ready)
+        except asyncio.CancelledError:
+            if not reserved:
+                raise
+            raise AttemptStopped(planned=False) from None
+        except DecisionDismissed:
+            raise AttemptDismissed(planned=False) from None
+        if prepared is None:
+            return Result(declined=True)
+        job, deps, log, guard = prepared
+        try:
+            store.save(job)
+        except SaveError as exc:
+            if reserved and exc.replaced:
+                raise UncertainPlan(f"Could not sync the new job plan at {store.path(job_id)}: {exc}") from exc
+            raise
+        try:
+            return await execute(job, store, paths, prefs, emit, decide, log, deps, guard=guard)
+        except asyncio.CancelledError:
+            if not reserved:
+                raise
+            raise AttemptStopped(planned=True) from None
+
+
+async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backend_ready):
     address = media.parse_url(request.url)
+    destination_option = request.output if request.output is not None else prefs.output
+    if reserved:
+        target = Path(destination_option)
+        base_identity = jobs.safe_destination(target)
     scope = await scope_for(address, request, decide)
     if scope == "playlist" and media.is_mix(address.playlist):
         raise YdlError("Auto-generated YouTube mixes are unsupported. Use --single for an individual video.")
-    target = output_path(request.output if request.output is not None else prefs.output)
+    if not reserved:
+        target = output_path(destination_option)
     quality = quality_value(request.quality if request.quality is not None else prefs.quality)
-    job_id = uuid4().hex
     log = Log(paths.state / "logs" / f"{job_id}.log")
-    deps = await prepare(paths, prefs, decide, emit, log, no_update=request.no_update)
+    deps = await prepare(paths, prefs, decide, emit, log, no_update=request.no_update, backend_ready=backend_ready)
     emit(Event("metadata", "Fetching YouTube metadata"))
     plan = await get_plan(address, scope, request, deps, decide, log)
     if plan is None:
-        return Result(declined=True)
+        return None
     info, entries = plan
     keep_video = await keep_video_for(request, prefs, decide)
-    destination = create_destination(target, scope, info, address)
+    if reserved and jobs.safe_destination(target) != base_identity:
+        raise jobs.DestinationChanged(f"Destination changed during planning: {target}. Restore the folder and Recheck.")
+    destination = create_destination(target, scope, info, address, queue=reserved)
+    guard = jobs.DestinationGuard.capture(target, destination) if reserved else None
     settings = Settings(scope, quality, keep_video, destination)
-    job = jobs.Job.create(job_id, settings, planned_items(entries, scope == "playlist"))
-    store = jobs.JobStore(paths.state)
-    store.save(job)
-    with store.claim(job.id):
-        return await execute(job, store, paths, prefs, emit, decide, log, deps)
+    job = jobs.Job.create(job_id, settings, planned_items(entries, scope == "playlist"),
+                          enqueued_base=str(target) if reserved else None)
+    return job, deps, log, guard
 
 
-def create_destination(target, scope, info, address):
+def create_destination(target, scope, info, address, *, queue=False):
     target.mkdir(parents=True, exist_ok=True)
     if scope == "single":
         return target
     generated = add_playlist_directory(target, info.get("title"), address.playlist)
+    if queue:
+        jobs.safe_destination(generated)
     return jobs.local_directory(generated)
 
 
-async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = None):
+async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = None, backend_ready=False):
     """Resume an existing plan using only the saved item IDs and destination."""
     store = jobs.JobStore(paths.state)
-    selected = store.select(job_id)
-    with store.claim(selected.id):
-        job = store.load(selected.id)
+    job_id = store.select(None).id if job_id is None else job_id
+    with store.claim(job_id):
+        job = store.load(job_id)
+        if job.enqueued_base is not None:
+            job = store.load(job_id, admit=True)
         log = Log(store.logs / f"{job.id}.log")
         destination = Path(job.destination)
+        jobs.inspect_destination(job)
         destination.parent.mkdir(parents=True, exist_ok=True)
         jobs.local_directory(destination)
-        return await execute(job, store, paths, prefs, emit, decide, log)
+        guard = jobs.DestinationGuard.capture(Path(job.enqueued_base), destination) if job.enqueued_base else None
+        try:
+            return await execute(job, store, paths, prefs, emit, decide, log,
+                                 guard=guard, backend_ready=backend_ready)
+        except DecisionDismissed:
+            raise AttemptDismissed(planned=True) from None
 
 
 def item_event(job, item, stage, **metrics):
@@ -209,16 +280,30 @@ async def staged_source(job, item, deps, emit, store, staging, log):
     return source
 
 
-async def staged_outputs(job, pending, source, deps, staging, item, log):
+def video_destination(job, item, source, pending, store):
+    if "video" not in pending:
+        return None
+    target = pending["video"] or Path(job.destination) / f"{item.stem}{jobs.video_suffix(source)}"
+    if "video" not in item.outputs and target.name != item.video_target:
+        item.video_target = target.name
+        try:
+            store.save(job)
+        except OSError as exc:
+            raise YdlError(f"Could not save the selected video target {target}: {exc}") from exc
+    if os.path.lexists(target):
+        raise jobs.collision(target)
+    return target
+
+
+async def staged_outputs(job, pending, source, deps, staging, target, log):
     outputs = {}
     if "mp3" in pending:
         mp3 = staging / "verified.mp3"
         await media.convert(deps.ffmpeg, source, mp3, job.quality, log)
         await media.verify_output(deps.ffprobe, mp3, "mp3", log)
         outputs["mp3"] = mp3, pending["mp3"]
-    if "video" in pending:
+    if target is not None:
         suffix = jobs.video_suffix(source)
-        target = pending["video"] or (Path(job.destination) / f"{item.stem}{suffix}")
         video = source
         if target.suffix != suffix:
             video = staging / f"remuxed{target.suffix}"
@@ -228,12 +313,17 @@ async def staged_outputs(job, pending, source, deps, staging, item, log):
     return outputs
 
 
-async def process_item(job, item, pending, store, deps, emit, log):
+async def process_item(job, item, pending, store, deps, emit, log, guard):
+    if guard:
+        guard.check()
     staging = jobs.staging_path(job, item)
     source = await staged_source(job, item, deps, emit, store, staging, log)
     emit(item_event(job, item, "converting"))
-    outputs = await staged_outputs(job, pending, source, deps, staging, item, log)
-    await jobs.publish(store, job, item, outputs)
+    target = video_destination(job, item, source, pending, store)
+    outputs = await staged_outputs(job, pending, source, deps, staging, target, log)
+    await jobs.publish(store, job, item, outputs, guard)
+    if guard:
+        guard.check()
     try:
         jobs.remove_staging(staging)
     except OSError as exc:
@@ -252,21 +342,29 @@ async def check_items(job):
     return checked
 
 
-async def execute(job, store, paths, prefs, emit, decide, log, deps=None):
+async def execute(job, store, paths, prefs, emit, decide, log, deps=None, *,
+                  guard=None, backend_ready=False):
     emit(Event("job", job.id))
     emit(Event("checking", "Checking output files"))
     checked = await check_items(job)
     if deps is None and any(pending for _, pending, _ in checked):
-        deps = await prepare(paths, prefs, decide, emit, log)
-    emit(Event("settings", settings=job.settings))
+        deps = await prepare(paths, prefs, decide, emit, log, backend_ready=backend_ready)
+    title = Path(job.destination).name if job.scope == "playlist" else job.items[0].title
+    emit(Event("settings", settings=job.settings, title=title, total=len(job.items)))
+    return await execute_items(job, store, checked, deps, emit, log, guard)
+
+
+async def execute_items(job, store, checked, deps, emit, log, guard):
     diagnostics = []
+    conflicts = []
+    changed = ""
     saved = 0
     for item, pending, error in checked:
         try:
             if error:
                 raise error
             if pending:
-                await process_item(job, item, pending, store, deps, emit, log)
+                await process_item(job, item, pending, store, deps, emit, log, guard)
             saved += 1
             emit(item_event(job, item, "saved"))
         except (OSError, TimeoutError, YdlError) as exc:
@@ -275,7 +373,21 @@ async def execute(job, store, paths, prefs, emit, decide, log, deps=None):
             log.write(message)
             diagnostics.append(message)
             emit(item_event(job, item, "failed", message=detail))
+            if isinstance(exc, jobs.OutputConflict):
+                conflicts.append(detail)
+            if isinstance(exc, jobs.DestinationChanged):
+                changed = detail
+                break
+    if guard and not changed:
+        try:
+            guard.check()
+        except jobs.DestinationChanged as exc:
+            changed = str(exc)
+            diagnostics.append(changed)
+            log.write(changed)
     job.complete = not diagnostics
     store.save(job)
+    attention = "\n".join([*conflicts, changed] if changed else conflicts)
     return Result(Path(job.destination), saved, len(diagnostics), tuple(diagnostics),
-                  job_id=job.id, log=log.path)
+                  job_id=job.id, log=log.path, attention=attention, destination_changed=bool(changed),
+                  output_conflict=bool(conflicts))

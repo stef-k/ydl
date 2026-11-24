@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Add the optional `ydl tui` frontend with a persistent serial queue, playlist
+  choices, responsive settings and job details, and saved-job retry.
+- Preserve recent-job retry results, reuse queue verification for linked jobs,
+  and refresh job details after Recheck.
+- Release superseded Recent jobs verification locks during queue recovery and
+  show saved plan details after a destination change.
+- Keep a saved plan required after a destination change and refresh Recent jobs
+  when a queue entry is removed.
+- Explain missing saved plans in Recent jobs and keep external retries out of
+  the queue summary.
+- Block retry when a queued job loses its saved plan during settlement, clear
+  the warning after a successful Recheck, and keep queue counts readable at
+  compact terminal widths.
+- Keep the focused queue row visible during keyboard navigation and terminal
+  resizing. When the live summary wraps, keep the selected row in view if
+  visible and preserve the browsing position if the user has scrolled away.
+  Match mouse presses and releases to the same row. Only consecutive clicks
+  on the same row open Job Details.
+- Keep job ownership until managed command trees finish cleanup after a stop
+  or terminal loss.
 - Add the `ydl` CLI for individual YouTube videos and playlists.
 - Manage private yt-dlp and optional Deno installations, including release
   checks and SHA-256 verification.

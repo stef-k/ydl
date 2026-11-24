@@ -51,13 +51,17 @@ def quality_value(value):
     return value.upper()
 
 
+class InvalidOutput(YdlError):
+    """An output preference could not be resolved to a path."""
+
+
 def output_path(value):
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
-        raise YdlError("Output must name a directory.", 2)
+        raise InvalidOutput("Output must name a directory.", 2)
     try:
         return Path(value).expanduser().resolve()
     except (RuntimeError, ValueError) as exc:
-        raise YdlError(f"Invalid output directory: {exc}", 2) from exc
+        raise InvalidOutput(f"Invalid output directory: {exc}", 2) from exc
 
 
 def validate(values):
@@ -95,20 +99,59 @@ def set_value(path, prefs, key, value):
         if value not in ("true", "false"):
             raise YdlError("keep_video must be true or false.", 2)
         value = value == "true"
-    updated = validate({**asdict(prefs), key: value})
+    return save(path, {**asdict(prefs), key: value})
+
+
+def save(path, values):
+    updated = validate(values)
     atomic_write(path, toml_text(updated).encode())
     return updated
 
 
-def atomic_write(path, data, mode=0o600):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        staged = Path(stream.name)
+class SaveError(OSError):
+    def __init__(self, path, cause, *, replaced):
+        super().__init__(f"{path}: {cause}")
+        self.replaced = replaced
+
+
+def sync_directories(path):
+    # Include ancestors even when they already exist: an earlier interrupted
+    # save could have created them without syncing their directory entries.
+    for directory in (path, *path.parents):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def admitted_read(path, validate_bytes):
+    with path.open("rb") as stream:
+        value = validate_bytes(stream.read())
+        os.fsync(stream.fileno())
+    sync_directories(path.parent)
+    return value
+
+
+def atomic_write(path, data, mode=0o600, *, durable=False):
+    replaced = False
+    staged = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            staged = Path(stream.name)
             stream.write(data)
             stream.flush()
             os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
-            staged.replace(path)
-        finally:
-            staged.unlink(missing_ok=True)
+        staged.replace(path)
+        replaced = True
+        if durable:
+            sync_directories(path.parent)
+    except OSError as exc:
+        if staged is not None and not replaced:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise SaveError(path, exc, replaced=replaced) from exc

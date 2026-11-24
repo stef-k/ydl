@@ -65,6 +65,8 @@ class UpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(report)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertTrue(any("Using 2026.10.26" in event.message for event in self.events))
+        status = [event.backend for event in self.events if event.backend][-1]
+        self.assertEqual((status.state, status.version), ("Ready · using installed version", "2026.10.26"))
         with self.assertRaisesRegex(YdlError, "does not report the selected release version"):
             await self.update(package("2026.11.10"), tag="2026.11.11")
         self.assertEqual(self.path.read_bytes(), original)

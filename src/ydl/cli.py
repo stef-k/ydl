@@ -16,7 +16,7 @@ def parser_for(command):
     parser = argparse.ArgumentParser(prog="ydl" if command == "download" else f"ydl {command}")
     if command == "download":
         parser.description = "Download a YouTube video or playlist as MP3."
-        parser.epilog = "Other commands: retry [JOB_ID], doctor, config show, config set, update [--check]."
+        parser.epilog = "Other commands: tui [URL], retry [JOB_ID], doctor, config show, config set, update [--check]."
         parser.add_argument("url", metavar="URL")
         scope = parser.add_mutually_exclusive_group()
         scope.add_argument("--single", action="store_const", dest="scope", const="single")
@@ -30,6 +30,9 @@ def parser_for(command):
         parser.add_argument("--no-update", action="store_true")
     elif command == "retry":
         parser.add_argument("job_id", nargs="?", metavar="JOB_ID")
+    elif command == "tui":
+        parser.description = "Open the interactive download queue. An optional URL pre-fills the draft."
+        parser.add_argument("url", nargs="?", metavar="URL")
     elif command == "update":
         parser.add_argument("--check", action="store_true")
     elif command == "config":
@@ -42,7 +45,7 @@ def parser_for(command):
 
 
 def arguments(argv):
-    commands = {"config", "doctor", "retry", "update"}
+    commands = {"config", "doctor", "retry", "tui", "update"}
     command = argv[0] if argv and argv[0] in commands else "download"
     return command, parser_for(command).parse_args(argv if command == "download" else argv[1:])
 
@@ -126,8 +129,26 @@ async def run_command(command, args, paths, preferences, terminal):
         await asyncio.gather(animation, return_exceptions=True)
 
 
+def launch_tui(url):
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()) or os.environ.get("TERM") in (None, "", "dumb"):
+            raise YdlError("ydl tui needs an interactive terminal. For non-interactive use, run ydl URL.")
+        try:
+            from .tui import launch
+        except ModuleNotFoundError as exc:
+            if exc.name != "textual":
+                raise
+            raise YdlError("Textual is required for ydl tui. From the checkout run pipx install '.[tui]'.") from exc
+        return launch(config.Paths.discover(), url)
+    except (YdlError, OSError) as exc:
+        print(clean(str(exc)), file=sys.stderr)
+        return 1
+
+
 def main(argv=None):
     command, args = arguments(sys.argv[1:] if argv is None else argv)
+    if command == "tui":
+        return launch_tui(args.url)
     terminal = Terminal()
     try:
         paths = config.Paths.discover()
