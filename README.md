@@ -1,10 +1,12 @@
 # ydl
 
 **Save a YouTube video or an entire playlist as MP3 from your Linux terminal.**
-Use the interactive terminal user interface (TUI) to choose download options,
-manage a persistent download queue, and view progress. Use the command-line
-interface (CLI) to run downloads directly from the shell. Both save files to
-`~/Downloads/ydl/` by default and can keep the video or resume interrupted work.
+ydl provides a Terminal User Interface (TUI). In the TUI, you can add multiple
+YouTube URLs to a download queue. You can also run downloads from the command
+line (CLI).
+
+Files go to `~/Downloads/ydl/` by default. You can keep the video or resume an
+interrupted download.
 
 [Install](#install-on-linux-mint-or-ubuntu) · [Use the TUI](#use-the-tui) · [Use the CLI](#use-the-cli) · [CLI switches](#common-switches) · [Defaults](#save-your-defaults)
 
@@ -40,7 +42,7 @@ Run one of these install commands from the cloned `ydl` folder.
 
 | Interface | Install | Use |
 | --- | --- | --- |
-| Interactive TUI with download queue | `pipx install '.[tui]'` | `ydl tui` |
+| Terminal User Interface (TUI) | `pipx install '.[tui]'` | `ydl tui` |
 | Command line only | `pipx install .` | `ydl URL` |
 
 The TUI installation also includes the CLI. If you already installed ydl with
@@ -98,8 +100,7 @@ Otherwise, answer **Yes** at the Deno prompt to install a copy for your account.
 
 ## Use the TUI
 
-After installing with the `tui` extra, open the interactive interface in your
-terminal. You can start with an empty editor or prefill a YouTube link.
+Run `ydl tui` to open the TUI. To fill in the link field, pass a YouTube URL.
 
 ```sh
 ydl tui
