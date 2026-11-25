@@ -1,6 +1,7 @@
 """Queue row actions, saved job browsing and read-only job details."""
 
 import asyncio
+from contextlib import ExitStack
 from pathlib import Path
 
 from rich.table import Table
@@ -321,15 +322,21 @@ class Details(Panel):
                 app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error", markup=False)
 
     async def open_verified_download(self, session, inspection, kind, path):
-        with media_watch() as watch:
-            current = await session.inspect(self.row_id, for_open=True, before_hash=watch.before_hash)
+        with ExitStack() as resources:
+            problem = "The saved media is missing or has changed."
+            try:
+                watch = resources.enter_context(media_watch())
+            except (OSError, YdlError) as exc:
+                watch = None
+                problem = str(exc)
+            current = await session.inspect(self.row_id, for_open=True,
+                                            before_hash=watch.before_hash if watch is not None else None)
             if current is None or session.closing or self not in self.app.screen_stack:
                 return
-            problem = "The saved media is missing or has changed."
             if kind == "folder" and current.destination_identity != inspection.destination_identity:
                 problem = ("The download folder is missing." if current.destination_identity is None
                            else "The download folder has changed.")
-            elif verified_download_path(current, kind) == path:
+            elif watch is not None and verified_download_path(current, kind) == path:
                 problem = await open_in_desktop(path, current, watch, stop=session.quit_requested)
                 if not problem:
                     return

@@ -9,6 +9,7 @@
   opening a folder. It rechecks folder access at launch and detects edits to
   saved files, including through writable memory maps. Unrelated files in the
   folder do not interrupt Open.
+  If Linux cannot start monitoring the files, Open still checks their receipts.
   Recent jobs shows the latest verified status and offers **Retry selected job**
   for eligible missing downloads.
 - Limit Quit and Ctrl+Q to the main TUI screen. Quit cancels in-progress Open

@@ -1,6 +1,8 @@
 """Exercise changed download targets through the Job Details Open actions."""
 
 import asyncio
+import ctypes
+import errno
 import hashlib
 import mmap
 import os
@@ -76,6 +78,39 @@ class OpenTests(PilotCase):
                 self.assertIn("Retry selected job", notify.call_args.args[0])
             self.assertIn("Incomplete", self.screen_text(app))
             self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+            await pilot.press("escape")
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+
+    async def test_open_audio_refreshes_receipts_when_watch_creation_fails(self):
+        _, audio, _ = self.save_job()
+        app = self.app()
+
+        def unavailable(_flags):
+            ctypes.set_errno(errno.EMFILE)
+            return -1
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            with patch.object(desktop._libc, "inotify_init1", side_effect=unavailable), patch.object(
+                    desktop.subprocess, "Popen") as launch, patch.object(app, "notify", wraps=app.notify) as notify:
+                self.assertTrue(await pilot.click("#open-mp3"))
+                await self.wait_for(pilot, lambda: notify.called)
+                self.assertIn(os.strerror(errno.EMFILE), notify.call_args.args[0])
+                self.assertIn("Try Open audio again", notify.call_args.args[0])
+                self.assertIn("Complete", self.screen_text(app))
+                open_audio = app.screen.query_one("#open-mp3", Button)
+                self.assertTrue(open_audio.display)
+                await self.wait_for(pilot, lambda: not open_audio.has_class("-active"))
+
+                audio.unlink()
+                self.assertTrue(await pilot.click("#open-mp3"))
+                await self.wait_for(pilot, lambda: notify.call_count == 2)
+                launch.assert_not_called()
+                self.assertIn("Incomplete", self.screen_text(app))
+                self.assertFalse(open_audio.display)
+                self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+                self.assertIn("Retry selected job", notify.call_args.args[0])
             await pilot.press("escape")
             self.assertIn("Incomplete", self.screen_text(app))
             self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
