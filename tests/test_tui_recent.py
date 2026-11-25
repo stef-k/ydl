@@ -236,11 +236,11 @@ class RecentJobsTests(PilotCase):
         inspect = jobs.inspect_job
         release = asyncio.Event()
 
-        async def verify(store, row_id, *, enqueued=None):
+        async def verify(store, row_id, *, enqueued=None, **kwargs):
             if enqueued is None:
                 with store.observe(row_id):
                     await release.wait()
-            return await inspect(store, row_id, enqueued=enqueued)
+            return await inspect(store, row_id, enqueued=enqueued, **kwargs)
 
         app = self.app()
         with patch.object(jobs, "inspect_job", side_effect=verify), patch.object(
@@ -269,7 +269,7 @@ class RecentJobsTests(PilotCase):
         inspecting, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         inspect = jobs.inspect_job
 
-        async def verify(store, row_id, *, enqueued=None):
+        async def verify(store, row_id, *, enqueued=None, **kwargs):
             if enqueued is None:
                 with store.observe(row_id):
                     inspecting.set()
@@ -279,7 +279,7 @@ class RecentJobsTests(PilotCase):
                         cancelling.set()
                         await release.wait()
                         raise
-            return await inspect(store, row_id, enqueued=enqueued)
+            return await inspect(store, row_id, enqueued=enqueued, **kwargs)
 
         app = self.app()
         with patch.object(jobs, "inspect_job", side_effect=verify), patch.object(

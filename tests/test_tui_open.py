@@ -2,8 +2,11 @@
 
 import asyncio
 import hashlib
+import mmap
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, get_ident
+from unittest import skipIf
 from unittest.mock import patch
 
 from textual.widgets import Button, DataTable
@@ -92,6 +95,39 @@ class OpenTests(PilotCase):
         await self.check_playlist_dispatch_change(lambda path: (path.parent / "notes.txt").touch(), "Complete",
                                                   None, after_tracks=True)
 
+    async def test_open_folder_blocks_a_memory_mapped_edit(self):
+        def edit_track(path):
+            with path.open("r+b") as stream, mmap.mmap(stream.fileno(), 0) as mapped:
+                mapped[:] = b"changed song"
+                mapped.flush()
+
+        await self.check_playlist_dispatch_change(edit_track, "Needs attention", "Move it aside", after_tracks=True)
+
+    async def test_open_folder_blocks_a_mapping_that_is_still_writable_at_launch(self):
+        def edit_track(path):
+            with path.open("r+b") as stream:
+                mapped = self.enterContext(mmap.mmap(stream.fileno(), 0))
+            mapped[:] = b"changed song"
+
+        await self.check_playlist_dispatch_change(edit_track, "Needs attention", "Move it aside", after_tracks=True)
+
+    async def test_open_folder_allows_a_reader_during_dispatch(self):
+        def read_track(path):
+            stream = self.enterContext(path.open("rb"))
+            self.assertEqual(stream.read(), b"second track")
+
+        await self.check_playlist_dispatch_change(read_track, "Complete", None, after_tracks=True)
+
+    @skipIf(os.geteuid() == 0, "Root can read a directory without read permission")
+    async def test_open_folder_rechecks_read_access_at_launch(self):
+        def revoke_read(path):
+            folder = path.parent
+            self.addCleanup(folder.chmod, folder.stat().st_mode)
+            folder.chmod(0o300)
+
+        await self.check_playlist_dispatch_change(revoke_read, "Needs attention", "Cannot access saved destination",
+                                                  after_tracks=True)
+
     async def check_playlist_dispatch_change(self, change, status, diagnostic, *, after_tracks=False):
         folder, audio, _ = self.save_job(playlist=True)
         store = jobs.JobStore(self.paths.state)
@@ -120,9 +156,10 @@ class OpenTests(PilotCase):
             return output_stamp(path)
 
         def check_folder(inspection):
+            result = folder_problem(inspection)
             if after_tracks:
                 wait_for_change()
-            return folder_problem(inspection)
+            return result
 
         def pause_dispatch(*args, **kwargs):
             with patch.object(jobs, "output_stamp", side_effect=check_track), patch.object(
@@ -180,6 +217,34 @@ class OpenTests(PilotCase):
             await pilot.press("escape")
             self.assertIn("Incomplete", self.screen_text(app))
             self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+
+    async def test_open_audio_detects_an_existing_mapping_closed_after_the_receipt_read(self):
+        _, audio, _ = self.save_job()
+        with audio.open("r+b") as stream:
+            mapped = self.enterContext(mmap.mmap(stream.fileno(), 0))
+        mapped[:] = b"mp3"  # Dirty the page before verification, leaving the saved bytes intact.
+        sha256 = jobs._sha256
+
+        def edit_after_hash(path, *, stop):
+            digest = sha256(path, stop=stop)
+            if not mapped.closed:
+                mapped[:] = b"new"
+                mapped.close()
+            return digest
+
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            with patch.object(jobs, "_sha256", side_effect=edit_after_hash), patch.object(
+                    desktop.subprocess, "Popen") as launch, patch.object(app, "notify", wraps=app.notify) as notify:
+                self.assertTrue(await pilot.click("#open-mp3"))
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
+                self.assertIn("Move it aside", notify.call_args.args[0])
+            self.assertIn("Needs attention", self.screen_text(app))
+            await pilot.press("escape")
+            self.assertIn("Needs attention", self.screen_text(app))
+            self.assertTrue(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_open_audio_blocks_a_file_changed_while_checking_retained_video(self):
         folder, audio, video = self.save_job(keep_video=True)
@@ -349,12 +414,12 @@ class OpenTests(PilotCase):
         stages = iter(((first, first_release), (second, second_release)))
         inspect = jobs._inspect_outputs
 
-        def pause_inspection(job, *, stop):
+        def pause_inspection(job, **kwargs):
             started, release = next(stages)
             started.set()
             if not release.wait(5):
                 raise TimeoutError("Open verification did not resume")
-            return inspect(job, stop=stop)
+            return inspect(job, **kwargs)
 
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)

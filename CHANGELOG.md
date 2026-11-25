@@ -6,8 +6,9 @@
   continue to use their original filenames.
 - Open the download folder, MP3 or retained video from Job Details for
   completed jobs in the queue and Recent jobs. Open rechecks media even when
-  opening a folder. It checks the launch path and listens for changes to saved
-  files during dispatch, so unrelated files in the folder do not interrupt Open.
+  opening a folder. It rechecks folder access at launch and detects edits to
+  saved files, including through writable memory maps. Unrelated files in the
+  folder do not interrupt Open.
   Recent jobs shows the latest verified status and offers **Retry selected job**
   for eligible missing downloads.
 - Limit Quit and Ctrl+Q to the main TUI screen. Quit cancels in-progress Open

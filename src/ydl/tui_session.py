@@ -256,7 +256,7 @@ class QueueSession:
             display = View(labels[status], observation)
         return settled, display
 
-    async def inspect(self, row_id, entry=None, *, for_open=False):
+    async def inspect(self, row_id, entry=None, *, for_open=False, before_hash=None):
         if for_open:
             entry = self.index.row(row_id)
         if self.closing or (entry is None and self.index.row(row_id) is not None):
@@ -270,7 +270,8 @@ class QueueSession:
                 return None
         # Sample the cache after waiting so a later Open can publish after an earlier one.
         prior_external = self.external.get(row_id) if for_open and entry is None else None
-        task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
+        task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None,
+                                                    before_hash=before_hash))
         self.inspections[row_id] = task
         try:
             observation = await task

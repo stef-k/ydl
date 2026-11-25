@@ -314,7 +314,7 @@ async def pending_outputs(job, item):
     return missing
 
 
-def _check_item_outputs(job, item, *, stop):
+def _check_item_outputs(job, item, *, stop, before_hash=None):
     if stop.is_set():
         raise asyncio.CancelledError
     destination = Path(job.destination)
@@ -326,7 +326,7 @@ def _check_item_outputs(job, item, *, stop):
     try:
         for kind, name in names.items():
             path = destination / component(name) if name is not None else None
-            stamp = _verify_output(path, item.outputs.get(kind, {}), stop=stop) if path is not None else None
+            stamp = _verify_output(path, item.outputs.get(kind, {}), stop, before_hash) if path is not None else None
             if stamp is None:
                 missing[kind] = path if kind == "mp3" or kind in item.outputs else None
                 continue
@@ -358,12 +358,14 @@ def output_stamp(path):
         return None
 
 
-def _verify_output(path, receipt, *, stop):
+def _verify_output(path, receipt, stop, before_hash):
     try:
         info = path.lstat()
-        if (receipt.get("name") == path.name and stat.S_ISREG(info.st_mode)
-                and _sha256(path, stop=stop) == receipt.get("sha256")):
-            return _file_stamp(info)
+        if receipt.get("name") == path.name and stat.S_ISREG(info.st_mode):
+            if before_hash is not None:
+                before_hash(path)
+            if _sha256(path, stop=stop) == receipt.get("sha256"):
+                return _file_stamp(info)
     except FileNotFoundError:
         return None
     raise collision(path)
@@ -396,12 +398,12 @@ def inspect_destination(job):
     return info.st_dev, info.st_ino
 
 
-async def inspect_job(store, job_id, *, enqueued=None):
-    """Inspect the plan and its receipts under the same lock used for retry."""
-    return await run_file_check(_inspect_job, store, job_id, enqueued)
+async def inspect_job(store, job_id, *, enqueued=None, before_hash=None):
+    """Inspect under the retry lock, calling before_hash(path) before each receipt read."""
+    return await run_file_check(_inspect_job, store, job_id, enqueued, before_hash)
 
 
-def _inspect_job(store, job_id, enqueued, *, stop):
+def _inspect_job(store, job_id, enqueued, before_hash, *, stop):
     job = None
     try:
         with store.observe(job_id):
@@ -411,7 +413,7 @@ def _inspect_job(store, job_id, enqueued, *, stop):
                 job = store.load(job_id, admit=True)
             if enqueued is not None:
                 safe_destination(enqueued)
-            return _inspect_outputs(job, stop=stop)
+            return _inspect_outputs(job, stop=stop, before_hash=before_hash)
     except MissingPlan:
         if enqueued is not None:
             try:
@@ -423,7 +425,7 @@ def _inspect_job(store, job_id, enqueued, *, stop):
         return Inspection("blocked", job, diagnostic=str(exc))
 
 
-def _inspect_outputs(job, *, stop):
+def _inspect_outputs(job, *, stop, before_hash=None):
     output = Path(job.destination) if job.scope == "playlist" else None
     destination_identity = inspect_destination(job)
     if destination_identity is None:
@@ -432,7 +434,7 @@ def _inspect_outputs(job, *, stop):
     diagnostic = ""
     output_stamps = {}
     for item in job.items:
-        missing, item_outputs, error = _check_item_outputs(job, item, stop=stop)
+        missing, item_outputs, error = _check_item_outputs(job, item, stop=stop, before_hash=before_hash)
         if job.scope == "single" and item.position == 1 and "mp3" in item_outputs:
             output = item_outputs["mp3"][0]
         if error is not None:

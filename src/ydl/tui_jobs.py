@@ -11,7 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Static, TabbedContent, TabPane
 
 from . import jobs
-from .desktop import open_in_desktop
+from .desktop import media_watch, open_in_desktop
 from .models import YdlError
 from .terminal import clean, clean_lines, clip, display_path, format_eta, format_speed
 from .tui_dialogs import DialogTabs, Panel
@@ -321,20 +321,21 @@ class Details(Panel):
                 app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error", markup=False)
 
     async def open_verified_download(self, session, inspection, kind, path):
-        current = await session.inspect(self.row_id, for_open=True)
-        if current is None or session.closing or self not in self.app.screen_stack:
-            return
-        problem = "The saved media is missing or has changed."
-        if kind == "folder" and current.destination_identity != inspection.destination_identity:
-            problem = ("The download folder is missing." if current.destination_identity is None
-                       else "The download folder has changed.")
-        elif verified_download_path(current, kind) == path:
-            problem = await open_in_desktop(path, current, stop=session.quit_requested)
-            if not problem:
+        with media_watch() as watch:
+            current = await session.inspect(self.row_id, for_open=True, before_hash=watch.before_hash)
+            if current is None or session.closing or self not in self.app.screen_stack:
                 return
-            current = await session.inspect(self.row_id, for_open=True)
-            if current is None:
-                return
+            problem = "The saved media is missing or has changed."
+            if kind == "folder" and current.destination_identity != inspection.destination_identity:
+                problem = ("The download folder is missing." if current.destination_identity is None
+                           else "The download folder has changed.")
+            elif verified_download_path(current, kind) == path:
+                problem = await open_in_desktop(path, current, watch, stop=session.quit_requested)
+                if not problem:
+                    return
+                current = await session.inspect(self.row_id, for_open=True)
+                if current is None:
+                    return
 
         if current.state == "complete":
             label = dict(DOWNLOAD_ACTIONS)[kind]
