@@ -13,7 +13,9 @@ downloads.
 - Resume interrupted downloads and retry failed ones without re-downloading
   verified files.
 
-By default, MP3 files are saved to `~/Downloads/ydl/`.
+By default, MP3 files are saved to `~/Downloads/ydl/` and named after their video
+titles. If a new download's filename already exists, choose another destination
+or move the existing file before retrying.
 
 [Install](#install) · [Interactive mode](#interactive-mode) · [Command line](#command-line) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
 
@@ -118,12 +120,15 @@ automatically generated mixes are not supported.
 - Use the menu next to a queue entry to move pending downloads, retry eligible
   jobs, recheck their status or remove them.
 - Open **Job Details** by double-clicking a row to see its destination and log.
+  For completed jobs, **Open folder** opens the download directory. **Open audio**
+  and **Open video** launch the available files from a single-video job in your
+  desktop's default apps. These actions use `gio`.
 - **Recent jobs** lets you view saved downloads, including those started from
-  the command line, and retry eligible unfinished jobs.
+  the command line, open completed downloads and retry eligible unfinished jobs.
 - **Settings** changes your default download options.
 
-Removing entries or clearing completed downloads from the queue does not
-remove downloaded files, saved jobs or logs.
+Completed downloads stay in the queue until you use **Clear completed** or
+**Remove selected**. Both actions keep downloaded files, saved jobs and logs.
 
 Use **Help** for keyboard shortcuts or **Ctrl+Q** to quit.
 

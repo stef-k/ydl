@@ -437,7 +437,7 @@ class RenderTests(PilotCase):
                 self.assertIn("Goa Trance Collection [GoaPlaylist]/", active)
                 self.assertIn("100%", complete)
                 self.assertNotIn("─", complete)
-                self.assertIn("Night City Mix [NightCity].mp3", complete)
+                self.assertIn("Night City Mix.mp3", complete)
                 for key in ("Video Yesterday", "Video Unavailable"):
                     self.assertNotIn("%", next(line for line in lines if key in line))
                 transfer = app.dashboard.query_one("#transfer-panel")

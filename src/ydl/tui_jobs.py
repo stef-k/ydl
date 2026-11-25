@@ -1,6 +1,7 @@
 """Queue row actions, saved job browsing and read-only job details."""
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from rich.table import Table
@@ -10,6 +11,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Static, TabbedContent, TabPane
 
+from . import jobs
+from .models import YdlError
 from .terminal import clean, clean_lines, clip, display_path, format_eta, format_speed
 from .tui_dialogs import DialogTabs, Panel
 from .tui_widgets import JobTable, button, event_label, job_title, progress_bar, row_metadata
@@ -18,6 +21,7 @@ DASH = "—"
 ROW_ACTIONS = (("details", "Details"), ("retry-selected", "Retry selected entry"),
                ("up", "Move up"), ("down", "Move down"), ("remove", "Remove selected"),
                ("recheck", "Recheck"))
+DOWNLOAD_ACTIONS = (("folder", "Open folder"), ("mp3", "Open audio"), ("video", "Open video"))
 
 
 class RowMenu(Panel):
@@ -226,6 +230,34 @@ def active_progress(event):
             ("ETA", format_eta(event.eta) if event.eta is not None else DASH)]
 
 
+def verified_download_path(inspection, kind):
+    if inspection is None or inspection.state != "complete":
+        return None
+    job = inspection.job
+    folder = Path(job.destination)
+    if kind == "folder":
+        return folder
+    if kind == "video" and not job.keep_video:
+        return None
+    if job.scope == "single" and (receipt := job.items[0].outputs.get(kind)):
+        return folder / receipt["name"]
+    return None
+
+
+async def open_in_desktop(path):
+    try:
+        opened = await asyncio.to_thread(
+            subprocess.run, ["gio", "open", str(path)], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, timeout=10,
+        )
+    except FileNotFoundError as exc:
+        raise YdlError("Install gio (libglib2.0-bin on Linux Mint and Ubuntu).") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise YdlError("The desktop opener timed out.") from exc
+    if opened.returncode:
+        raise YdlError(f"Desktop opener exited with code {opened.returncode}. Check your desktop session and default app.")
+
+
 class Details(Panel):
     heading = "Job Details"
     initial_focus = "#--content-tab-progress-pane"
@@ -236,11 +268,15 @@ class Details(Panel):
         self.log_loaded = False
         self.log_reading = False
         self.has_log = False
+        self.download_inspection = None
 
     def body(self):
         with DialogTabs(id="details-tabs"):
             with TabPane("Progress", id="progress-pane"):
                 yield Static("", id="details-progress")
+                with Horizontal(id="download-actions", classes="form-line"):
+                    for kind, label in DOWNLOAD_ACTIONS:
+                        yield button(label, f"open-{kind}")
             with TabPane("Log", id="log-pane"):
                 yield Static("", id="log-path", markup=False)
                 with Horizontal(classes="form-line"):
@@ -277,10 +313,39 @@ class Details(Panel):
         retry.disabled = not can_retry(session, row_id)
         progress = self.progress_fields(status, session.events.get(row_id), result, inspected, settings, diagnostic)
         self.query_one("#details-progress", Static).update(progress)
+        self.sync_download_actions(inspected if status == "Complete" else None)
         self.query_one("#details-info", Static).update(self.info_text(entry, inspected, job, plan, settings, diagnostic))
         self.query_one("#log-path", Static).update(clean(self.log_path))
         self.query_one("#copy-log", Button).disabled = not self.has_log
         self.query_one("#log-refresh", Button).disabled = self.log_reading
+
+    def sync_download_actions(self, inspection):
+        self.download_inspection = inspection
+        self.query_one("#download-actions").display = verified_download_path(inspection, "folder") is not None
+        for kind, _ in DOWNLOAD_ACTIONS:
+            self.query_one(f"#open-{kind}", Button).display = verified_download_path(inspection, kind) is not None
+
+    @on(Button.Pressed, "#download-actions Button")
+    def open_download(self, event):
+        kind = event.button.id.removeprefix("open-")
+        inspection = self.download_inspection
+        if (path := verified_download_path(inspection, kind)) is not None:
+            self.run_worker(self.launch_download(inspection.job, kind, path))
+
+    async def launch_download(self, job, kind, path):
+        try:
+            if kind == "folder":
+                if not await asyncio.to_thread(jobs.inspect_destination, job):
+                    raise YdlError("The download folder is missing. Restore it and Recheck the job.")
+            else:
+                current = await jobs.inspect_job(self.app.session.store, self.row_id)
+                if verified_download_path(current, kind) != path:
+                    raise YdlError(current.diagnostic or "The saved media is missing or has changed. Recheck the job.")
+            if not self.app.session.closing:
+                await open_in_desktop(path)
+        except (OSError, YdlError) as exc:
+            self.app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error",
+                            markup=False)
 
     @staticmethod
     def diagnostic(entry, view, inspected, result):

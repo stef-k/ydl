@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Use video titles without appended IDs for new media filenames. Saved jobs
+  continue to use their original filenames.
+- Open the download folder, MP3 or retained video from Job Details for
+  completed jobs in the queue and Recent jobs.
+
 ## 1.0.0 - 2026-11-24
 
 - Add the optional `ydl tui` frontend with a persistent serial queue, playlist

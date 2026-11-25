@@ -95,8 +95,7 @@ def safe_name(text, fallback):
 def make_item(position, video_id, title, playlist):
     label = safe_name(title, "Untitled")
     prefix = f"{position:03d} - " if playlist else ""
-    stem = f"{prefix}{label} [{video_id}]" if video_id else f"{prefix}{label}"
-    return Item(position, video_id, title, stem)
+    return Item(position, video_id, title, f"{prefix}{label}")
 
 
 def component(name):

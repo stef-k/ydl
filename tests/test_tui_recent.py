@@ -1,6 +1,8 @@
 """Exercise Recent jobs against the queue and retry lifecycle."""
 
 import asyncio
+import hashlib
+import os
 from dataclasses import replace
 from threading import Event as ThreadEvent
 from unittest.mock import patch
@@ -16,6 +18,57 @@ from tui_pilot import PilotCase
 
 
 class RecentJobsTests(PilotCase):
+    async def test_open_saved_outputs_from_queue_and_recent_jobs_after_clear(self):
+        row = replace(self.entry("Track", keep_video=True), status="complete")
+        item = jobs.Item(1, "Track", "Saved song", "Saved song [Track]")
+        audio = self.output / f"{item.stem}.mp3"
+        video = self.output / f"{item.stem}.mkv"
+        for kind, path in (("mp3", audio), ("video", video)):
+            path.write_bytes(kind.encode())
+            item.outputs[kind] = {"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        item.video_target = video.name
+        store = jobs.JobStore(self.paths.state)
+        settings = Settings("single", "0", True, self.output)
+        with store.claim(row.id, new=True):
+            store.save(jobs.Job.create(row.id, settings, [item], enqueued_base=row.output))
+        self.disk.save([row])
+
+        opened = self.root / "opened"
+        gio = self.root / "gio"
+        gio.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$YDL_TEST_OPENED"\n')
+        gio.chmod(0o700)
+        app = self.app()
+        with patch.dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}", YDL_TEST_OPENED=str(opened)):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                app.dashboard.query_one("#queue").focus()
+                await pilot.press("d")
+                self.assertTrue(await pilot.click("#open-folder"))
+                await self.wait_for(pilot, lambda: opened.exists() and len(opened.read_text().splitlines()) == 2)
+                self.assertTrue(await pilot.click("#open-mp3"))
+                await self.wait_for(pilot, lambda: len(opened.read_text().splitlines()) == 4)
+                await pilot.press("escape")
+                self.assertTrue(await pilot.click("#clear-completed"))
+                self.assertTrue(await pilot.click("#confirm"))
+                await self.wait_for(pilot, lambda: not app.session.index.rows)
+                self.assertTrue(await pilot.click("#recent"))
+                await self.wait_for(pilot, lambda: app.session.external.get(row.id))
+                self.assertTrue(await pilot.click("#recent-details"))
+                open_video = app.screen.query_one("#open-video", Button)
+                open_video.focus()
+                await pilot.press("enter")
+                await self.wait_for(pilot, lambda: len(opened.read_text().splitlines()) == 6)
+                expected = ["open", str(self.output), "open", str(audio), "open", str(video)]
+                self.assertEqual(opened.read_text().splitlines(), expected)
+
+                video.unlink()
+                await self.wait_for(pilot, lambda: not open_video.has_class("-active"))
+                with patch.object(app, "notify", wraps=app.notify) as notify:
+                    await pilot.press("enter")
+                    await self.wait_for(pilot, lambda: notify.called)
+                    self.assertIn(str(video), notify.call_args.args[0])
+                self.assertEqual(opened.read_text().splitlines(), expected)
+
     async def test_recent_job_is_verified_when_its_queue_row_is_removed(self):
         row = replace(self.entry("Removed&list=SavedPlaylist"), status="failed")
         store = jobs.JobStore(self.paths.state)

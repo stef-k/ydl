@@ -151,7 +151,7 @@ while True:
         until(lambda: (self.root / "exited").exists())
         pid = int((self.root / "child_pid").read_text())
         until(lambda: not Path(f"/proc/{pid}").exists())
-        self.scenario.write_text("{}")
+        self.scenario.write_text(json.dumps({"title": "Second song"}))
         with tty_process(self.env, other_cwd) as restarted:
             restarted.await_output(b"Resume queue")
             until(lambda: b"updates off" in restarted.output, restarted.read)

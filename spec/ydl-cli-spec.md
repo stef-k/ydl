@@ -131,7 +131,7 @@ auto_update = true
 channel = "nightly"
 ```
 
-Name a single download `Title [VIDEO_ID].mp3` and a playlist download `Playlist title [PLAYLIST_ID]/001 - Title [VIDEO_ID].mp3`. Use the original one-based playlist position and pad shorter positions to three digits, including gaps for unavailable entries. Sanitize names and keep all generated paths within the resolved output directory. A retained video uses the same stem and the verified video's container extension.
+Name a new single download `Title.mp3` and a new playlist download `Playlist title [PLAYLIST_ID]/001 - Title.mp3`. Keep video IDs in the job plan and use the saved stems on retry, including for earlier jobs with ID suffixes. Use the original one-based playlist position and pad shorter positions to three digits, including gaps for unavailable entries. Sanitize names and keep all generated paths within the resolved output directory. A retained video uses the same stem and the verified video's container extension.
 
 An occupied target is a collision unless it is a regular file matching the saved verification record for that job and item. A new job cannot reuse a file based on its name. For a collision, preserve the file, fail the affected item, name the path, and explain how to continue after moving the file or starting a new job with `--output`. Reject non-directory entries or symlinks at generated playlist-directory paths. Publish final files atomically with no overwrite, including when another process claims the path during the download.
 

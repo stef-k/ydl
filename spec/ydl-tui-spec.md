@@ -230,7 +230,9 @@ Open Job Details for the selected queue row or recent job, with the **Progress**
 | **Log** | Show the log path and at most the last 200 lines or 64 KiB of the existing log, whichever is smaller, as plain text. Indicate when older text is omitted. Load on entry and on **Refresh** in a read-only worker. Show **No log yet** for a missing file and an actionable error for a failed read. **Copy log path** requests terminal clipboard copy when a log path exists. Keep the path visible for manual copying. |
 | **Info** | Show the reserved queue ID, core job ID when a plan exists, canonical URL when known, requested and resolved scope when known, MP3 quality, Keep video, enqueued base directory when known, resolved output, and latest diagnostic. Mark unavailable fields with a dash. |
 
-The Details action is **Retry selected entry** for a queued row or **Retry selected job** for a recent job outside the queue. Apply the same eligibility and worker rules as their other entry points. Retry targets the whole saved job's unfinished work. There is no retry for an individual track within a playlist.
+Job Details offers **Retry selected entry** for a queued row or **Retry selected job** for a recent job outside the queue. Apply the same eligibility and worker rules as their other entry points. Retry targets the whole saved job's unfinished work. There is no retry for an individual track within a playlist.
+
+For verified Complete jobs, the Progress tab offers **Open folder** for the saved destination. Single-video jobs also offer **Open audio** and, when the original video was retained, **Open video**. Revalidate the folder or saved media before handing the path to the desktop's default application via `gio open`. Report a missing path, failed verification, or failed launch in the TUI. These actions work from both the queue and Recent jobs.
 
 ### Recent jobs and retry
 
