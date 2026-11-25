@@ -5,8 +5,11 @@
 - Use video titles without appended IDs for new media filenames. Saved jobs
   continue to use their original filenames.
 - Open the download folder, MP3 or retained video from Job Details for
-  completed jobs in the queue and Recent jobs.
-- Limit Quit and Ctrl+Q to the main TUI screen.
+  completed jobs in the queue and Recent jobs. If an Open action finds a missing
+  download, Recent jobs refreshes its status and offers **Retry selected job**
+  when eligible.
+- Limit Quit and Ctrl+Q to the main TUI screen. Quit cancels in-progress Open
+  verification and waits for it to release the job lock.
 
 ## 1.0.0 - 2026-11-24
 
