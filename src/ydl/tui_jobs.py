@@ -238,11 +238,16 @@ def verified_download_path(inspection, kind):
     return None
 
 
-def download_folder_problem(job):
+def download_folder_problem(inspection):
     try:
-        return "" if jobs.inspect_destination(job) else "The download folder is missing."
+        identity = jobs.inspect_destination(inspection.job)
     except (OSError, YdlError) as exc:
         return str(exc)
+    if identity is None:
+        return "The download folder is missing."
+    if identity != inspection.destination_identity:
+        return "The download folder has changed."
+    return ""
 
 
 async def open_in_desktop(path):
@@ -346,14 +351,14 @@ class Details(Panel):
     async def revalidate_download(self, session, inspection, kind, path):
         problem = "The saved media is missing or has changed."
         if kind == "folder":
-            problem = await asyncio.to_thread(download_folder_problem, inspection.job)
+            problem = await asyncio.to_thread(download_folder_problem, inspection)
             if not problem:
                 return True
 
-        current = await session.inspect_for_open(self.row_id, inspection)
+        current = await session.inspect(self.row_id, for_open=True)
         if current is None:
             return False
-        if verified_download_path(current, kind) == path:
+        if kind != "folder" and verified_download_path(current, kind) == path:
             return True
 
         if session.index.row(self.row_id) is not None:

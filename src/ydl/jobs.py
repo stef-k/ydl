@@ -110,9 +110,15 @@ def local_directory(path, *, create=True):
             path.mkdir(mode=0o700)
         except FileExistsError:
             pass
-    if not stat.S_ISDIR(path.lstat().st_mode):
-        raise YdlError(f"Expected a real directory at {path}. Move the conflicting entry or choose another output.")
+    _directory_stat(path)
     return path
+
+
+def _directory_stat(path):
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise YdlError(f"Expected a real directory at {path}. Move the conflicting entry or choose another output.")
+    return info
 
 
 def safe_destination(path, *, remedy="Restore the folder and Recheck."):
@@ -314,28 +320,49 @@ def _check_item_outputs(job, item, *, stop):
     if job.keep_video:
         names["video"] = item.outputs.get("video", {}).get("name", item.video_target)
     missing = {}
+    verified = {}
     mp3 = None
-    for kind, name in names.items():
-        path = destination / component(name) if name is not None else None
-        try:
-            verified = path is not None and _verify_output(path, item.outputs.get(kind, {}), stop=stop)
-        except (OSError, YdlError) as exc:
-            return missing, mp3, exc
-        if not verified:
-            missing[kind] = path if kind == "mp3" or kind in item.outputs else None
-        elif kind == "mp3":
-            mp3 = path
+    try:
+        for kind, name in names.items():
+            path = destination / component(name) if name is not None else None
+            stamp = _verify_output(path, item.outputs.get(kind, {}), stop=stop) if path is not None else None
+            if stamp is None:
+                missing[kind] = path if kind == "mp3" or kind in item.outputs else None
+                continue
+            verified[kind] = path, stamp
+            if kind == "mp3":
+                mp3 = path
+
+        # The MP3 may have changed while we hashed the retained video.
+        for kind, (path, stamp) in verified.items():
+            try:
+                current = _file_stamp(path.lstat())
+            except FileNotFoundError:
+                current = None
+            if current == stamp:
+                continue
+            if kind == "mp3":
+                mp3 = None
+            if current is not None:
+                raise collision(path)
+            missing[kind] = path
+    except (OSError, YdlError) as exc:
+        return missing, mp3, exc
     return missing, mp3, None
+
+
+def _file_stamp(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _verify_output(path, receipt, *, stop):
     try:
-        mode = path.lstat().st_mode
-        if (receipt.get("name") == path.name and stat.S_ISREG(mode)
+        info = path.lstat()
+        if (receipt.get("name") == path.name and stat.S_ISREG(info.st_mode)
                 and _sha256(path, stop=stop) == receipt.get("sha256")):
-            return True
+            return _file_stamp(info)
     except FileNotFoundError:
-        return False
+        return None
     raise collision(path)
 
 
@@ -346,20 +373,22 @@ class Inspection:
     verified: int = 0
     output: Path | None = None
     diagnostic: str = ""
+    destination_identity: tuple[int, int] | None = None
 
 
 def inspect_destination(job):
+    """Validate the saved folder and return its identity when present."""
     destination = Path(job.destination)
     if job.enqueued_base is not None:
         safe_destination(Path(job.enqueued_base))
-        return safe_destination(destination) is not None
+        return safe_destination(destination)
     try:
-        local_directory(destination, create=False)
+        info = _directory_stat(destination)
     except FileNotFoundError:
-        return False
+        return None
     if not os.access(destination, os.R_OK | os.X_OK):
         raise YdlError(f"Cannot access saved destination: {destination}")
-    return True
+    return info.st_dev, info.st_ino
 
 
 async def inspect_job(store, job_id, *, enqueued=None):
@@ -391,7 +420,8 @@ def _inspect_job(store, job_id, enqueued, *, stop):
 
 def _inspect_outputs(job, *, stop):
     output = Path(job.destination) if job.scope == "playlist" else None
-    if not inspect_destination(job):
+    destination_identity = inspect_destination(job)
+    if destination_identity is None:
         return Inspection("unfinished", job, output=output)
     verified = 0
     diagnostic = ""
@@ -404,7 +434,7 @@ def _inspect_outputs(job, *, stop):
         elif not missing and item.video_id:
             verified += 1
     state = "blocked" if diagnostic else "complete" if verified == len(job.items) else "unfinished"
-    return Inspection(state, job, verified, output, diagnostic)
+    return Inspection(state, job, verified, output, diagnostic, destination_identity)
 
 
 def staging_path(job, item):
