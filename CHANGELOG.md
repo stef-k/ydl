@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-11-25
 
 - Use video titles without appended IDs for new media filenames. Saved jobs
   continue to use their original filenames.
