@@ -277,7 +277,8 @@ class JobStore:
             yield
 
 
-async def _run_file_check(check, *args):
+async def run_file_check(check, *args):
+    """Run a cancellable filesystem check and join it before releasing caller-owned resources."""
     stop = Event()
     worker = asyncio.create_task(asyncio.to_thread(check, *args, stop=stop))
     try:
@@ -307,7 +308,7 @@ def collision(path):
 
 
 async def pending_outputs(job, item):
-    missing, _, error = await _run_file_check(_check_item_outputs, job, item)
+    missing, _, error = await run_file_check(_check_item_outputs, job, item)
     if error is not None:
         raise error
     return missing
@@ -397,7 +398,7 @@ def inspect_destination(job):
 
 async def inspect_job(store, job_id, *, enqueued=None):
     """Inspect the plan and its receipts under the same lock used for retry."""
-    return await _run_file_check(_inspect_job, store, job_id, enqueued)
+    return await run_file_check(_inspect_job, store, job_id, enqueued)
 
 
 def _inspect_job(store, job_id, enqueued, *, stop):
@@ -472,7 +473,7 @@ async def publish(store, job, item, outputs, guard=None):
     for kind, (staged, target) in outputs.items():
         if os.path.lexists(target):
             raise collision(target)
-        receipts[kind] = {"name": target.name, "sha256": await _run_file_check(_sha256, staged)}
+        receipts[kind] = {"name": target.name, "sha256": await run_file_check(_sha256, staged)}
     item.outputs.update(receipts)
     store.save(job)
     for staged, target in outputs.values():

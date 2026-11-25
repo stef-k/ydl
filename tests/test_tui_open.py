@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from textual.widgets import Button, DataTable
 
-from ydl import jobs, runner, tui_jobs
+from ydl import desktop, jobs, runner
 from ydl.models import Settings
 from ydl.tui_dialogs import Confirm
 
@@ -65,7 +65,7 @@ class OpenTests(PilotCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
             audio.unlink()
-            with patch.object(tui_jobs.subprocess, "Popen") as launch, patch.object(
+            with patch.object(desktop.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 self.assertTrue(await pilot.click("#open-folder"))
                 await self.wait_for(pilot, lambda: launch.called or notify.called)
@@ -84,7 +84,15 @@ class OpenTests(PilotCase):
         await self.check_playlist_dispatch_change(lambda path: path.write_bytes(b"new"), "Needs attention",
                                                   "Move it aside")
 
-    async def check_playlist_dispatch_change(self, change, status, diagnostic):
+    async def test_open_folder_blocks_a_write_after_the_last_check_of_track_two(self):
+        await self.check_playlist_dispatch_change(lambda path: path.write_bytes(b"changed song"), "Needs attention",
+                                                  "Move it aside", after_tracks=True)
+
+    async def test_open_folder_ignores_an_unrelated_new_file(self):
+        await self.check_playlist_dispatch_change(lambda path: (path.parent / "notes.txt").touch(), "Complete",
+                                                  None, after_tracks=True)
+
+    async def check_playlist_dispatch_change(self, change, status, diagnostic, *, after_tracks=False):
         folder, audio, _ = self.save_job(playlist=True)
         store = jobs.JobStore(self.paths.state)
         job_id, = store.recent_ids()
@@ -98,39 +106,80 @@ class OpenTests(PilotCase):
             store.save(job)
 
         checking, release = Event(), Event()
-        output_stamp, dispatch_problem = jobs.output_stamp, tui_jobs.dispatch_problem
+        output_stamp, dispatch_problem = jobs.output_stamp, desktop.dispatch_problem
+        folder_problem = desktop.download_folder_problem
 
-        def pause_later_track(path):
-            if path == later:
-                checking.set()
-                if not release.wait(5):
-                    raise TimeoutError("Dispatch verification did not resume")
+        def wait_for_change():
+            checking.set()
+            if not release.wait(5):
+                raise TimeoutError("Dispatch verification did not resume")
+
+        def check_track(path):
+            if not after_tracks and path == later:
+                wait_for_change()
             return output_stamp(path)
 
+        def check_folder(inspection):
+            if after_tracks:
+                wait_for_change()
+            return folder_problem(inspection)
+
         def pause_dispatch(*args, **kwargs):
-            with patch.object(jobs, "output_stamp", side_effect=pause_later_track):
+            with patch.object(jobs, "output_stamp", side_effect=check_track), patch.object(
+                    desktop, "download_folder_problem", side_effect=check_folder):
                 return dispatch_problem(*args, **kwargs)
 
         app = self.app()
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
-            with patch.object(tui_jobs, "dispatch_problem", side_effect=pause_dispatch), patch.object(
-                    tui_jobs.subprocess, "Popen") as launch, patch.object(
+            with patch.object(desktop, "dispatch_problem", side_effect=pause_dispatch), patch.object(
+                    desktop.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
+                launch.return_value.wait.return_value = 0
                 try:
                     self.assertTrue(await pilot.click("#open-folder"))
                     await self.wait_for(pilot, checking.is_set)
-                    change(audio)
+                    change(later if after_tracks else audio)
                 finally:
                     release.set()
                 await self.wait_for(pilot, lambda: launch.called or notify.called)
-                launch.assert_not_called()
-                self.assertIn(diagnostic, notify.call_args.args[0])
+                if diagnostic:
+                    launch.assert_not_called()
+                    self.assertIn(diagnostic, notify.call_args.args[0])
+                else:
+                    launch.assert_called_once()
+                    self.assertEqual(launch.call_args.args[0], ["gio", "open", str(folder)])
+                    notify.assert_not_called()
             self.assertIn(status, self.screen_text(app))
             self.assertEqual(app.screen.query_one("#details-retry", Button).disabled, status != "Incomplete")
             await pilot.press("escape")
             self.assertIn(status, self.screen_text(app))
             self.assertEqual(app.screen.query_one("#recent-retry", Button).disabled, status != "Incomplete")
+
+    async def test_open_audio_detects_removal_between_worker_result_and_launch(self):
+        _, audio, _ = self.save_job()
+        dispatch = desktop.dispatch_problem
+
+        def remove_after_check(*args, **kwargs):
+            problem = dispatch(*args, **kwargs)
+            self.assertFalse(problem)
+            audio.unlink()
+            return problem
+
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            with patch.object(desktop, "dispatch_problem", side_effect=remove_after_check), patch.object(
+                    desktop.subprocess, "Popen") as launch, patch.object(app, "notify", wraps=app.notify) as notify:
+                self.assertTrue(await pilot.click("#open-mp3"))
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
+                self.assertIn("Retry selected job", notify.call_args.args[0])
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+            await pilot.press("escape")
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_open_audio_blocks_a_file_changed_while_checking_retained_video(self):
         folder, audio, video = self.save_job(keep_video=True)
@@ -183,7 +232,7 @@ class OpenTests(PilotCase):
 
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
-            with patch.object(tui_jobs.subprocess, "Popen") as launch, patch.object(
+            with patch.object(desktop.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 try:
                     with patch.object(jobs, "_sha256", side_effect=pause_hash):
@@ -223,7 +272,7 @@ class OpenTests(PilotCase):
         hashing, release_hash, occupied, release_worker = Event(), Event(), Event(), Event()
         folder_checked = Event()
         sha256 = jobs._sha256
-        folder_problem = tui_jobs.download_folder_problem
+        folder_problem = desktop.download_folder_problem
         app = self.app()
         read_stop = app.session.quit_requested.is_set
         ui_thread = get_ident()
@@ -264,9 +313,9 @@ class OpenTests(PilotCase):
                 await self.wait_for(pilot, lambda: app.session.active_id == active.id)
                 await self.show_recent_details(pilot, app)
                 with patch.object(jobs, "_sha256", side_effect=pause_hash), patch.object(
-                        tui_jobs, "download_folder_problem", side_effect=check_folder), patch.object(
+                        desktop, "download_folder_problem", side_effect=check_folder), patch.object(
                         app.session.quit_requested, "is_set", side_effect=check_stop), patch.object(
-                        tui_jobs.subprocess, "Popen") as launch:
+                        desktop.subprocess, "Popen") as launch:
                     waiting = None
                     try:
                         self.assertTrue(await pilot.click("#open-mp3"))
