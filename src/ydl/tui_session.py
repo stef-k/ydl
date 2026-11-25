@@ -247,12 +247,12 @@ class QueueSession:
             display = View(labels[status], observation)
         return settled, display
 
-    async def inspect(self, row_id, entry=None):
+    async def inspect(self, row_id, entry=None, *, supersede=True):
         if self.closing or (entry is None and self.index.row(row_id) is not None):
             return None
-        if (previous := self.inspections.get(row_id)) is not None:
+        while (previous := self.inspections.get(row_id)) is not None:
             # A recovered row supersedes a Recent jobs read. A removed row lets its recheck finish.
-            if entry is not None and not previous.cancelling():
+            if supersede and entry is not None and not previous.cancelling():
                 previous.cancel()
             await asyncio.wait((previous,))
             if self.closing or (entry is None and self.index.row(row_id) is not None):
@@ -271,6 +271,22 @@ class QueueSession:
         finally:
             if self.inspections.get(row_id) is task:
                 del self.inspections[row_id]
+
+    def update_external_inspection(self, row_id, previous, observation):
+        if observation != previous:
+            self.external_results.pop(row_id, None)
+        if observation is None:
+            self.external.pop(row_id, None)
+        else:
+            self.external[row_id] = observation
+        self.changed()
+
+    async def inspect_for_open(self, row_id, previous):
+        observation = await self.inspect(row_id, self.index.row(row_id), supersede=False)
+        if (observation is not None and observation != previous and
+                self.external.get(row_id) is previous and self.index.row(row_id) is None):
+            self.update_external_inspection(row_id, previous, observation)
+        return observation
 
     async def entry_result(self, entry, result):
         if result.declined:

@@ -234,6 +234,8 @@ Job Details offers **Retry selected entry** for a queued row or **Retry selected
 
 For verified Complete jobs, the Progress tab offers **Open folder** for the saved destination. Single-video jobs also offer **Open audio** and, when the original video was retained, **Open video**. Revalidate the folder or saved media before handing the path to the desktop's default application via `gio open`. Report a missing path, failed verification, or failed launch in the TUI. These actions work from both the queue and Recent jobs.
 
+If revalidation finds unavailable output for a job outside the queue, update Job Details and Recent jobs with the new status. Offer **Retry selected job** for missing output when retry is eligible. Quit cancels any in-flight receipt verification for an Open action and waits for it to release the job lock.
+
 ### Recent jobs and retry
 
 Open **Recent jobs** from the footer. Show the 20 most recently created saved jobs, ordered newest first with job ID descending as the tie-breaker. For jobs without queue history, display Verifying, Complete after output verification, Incomplete, or Needs attention with the reason. Use the queue's Failed and Interrupted distinctions for linked rows and Active for work currently owned by this TUI. The core records do not need a new history field. **Retry selected job** is enabled while idle for an Incomplete external job and calls `runner.retry(id)` through the serial worker and backend gate. Linked jobs use the queue's selected-entry action. External jobs stay outside the queue index.

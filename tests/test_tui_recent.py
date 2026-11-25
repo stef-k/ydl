@@ -67,7 +67,77 @@ class RecentJobsTests(PilotCase):
                     await pilot.press("enter")
                     await self.wait_for(pilot, lambda: notify.called)
                     self.assertIn(str(video), notify.call_args.args[0])
+                    self.assertIn("Retry selected job", notify.call_args.args[0])
                 self.assertEqual(opened.read_text().splitlines(), expected)
+                self.assertIn("Incomplete", self.screen_text(app))
+                self.assertFalse(open_video.display)
+                self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+                await pilot.press("escape")
+                self.assertIn("Incomplete", self.screen_text(app))
+                self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+
+    async def test_confirmed_quit_waits_for_open_audio_verification(self):
+        complete, active, pending = (self.entry(name) for name in ("Complete", "Active", "Pending"))
+        complete = replace(complete, status="complete")
+        self.disk.save([complete, active, pending])
+        item = jobs.make_item(1, "Complete", "Saved song", False)
+        audio = self.output / f"{item.stem}.mp3"
+        audio.write_bytes(b"saved audio")
+        item.outputs["mp3"] = {"name": audio.name, "sha256": hashlib.sha256(audio.read_bytes()).hexdigest()}
+        store = jobs.JobStore(self.paths.state)
+        with store.claim(complete.id, new=True):
+            store.save(jobs.Job.create(complete.id, Settings("single", "0", False, self.output), [item],
+                                      enqueued_base=complete.output))
+        verifying, cancelling, release = ThreadEvent(), ThreadEvent(), ThreadEvent()
+        sha256 = jobs._sha256
+
+        def slow_hash(path, *, stop):
+            verifying.set()
+            while not release.wait(0.01):
+                if stop.is_set():
+                    cancelling.set()
+            return sha256(path, stop=stop)
+
+        async def download(*_args, **_kwargs):
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                raise runner.AttemptStopped(planned=False) from None
+
+        app = self.app()
+        with patch.object(runner, "download", side_effect=download) as operation:
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                self.assertTrue(await pilot.click("#primary"))
+                await self.wait_for(pilot, lambda: app.session.active_id == active.id)
+                app.dashboard.query_one("#queue").focus()
+                await pilot.press("ctrl+home", "d")
+                with patch.object(jobs, "_sha256", side_effect=slow_hash), patch(
+                        "ydl.tui_jobs.open_in_desktop") as launch:
+                    try:
+                        self.assertTrue(await pilot.click("#open-mp3"))
+                        await self.wait_for(pilot, verifying.is_set)
+                        await pilot.press("escape", "ctrl+q")
+                        self.assertIsInstance(app.screen, Confirm)
+                        self.assertTrue(await pilot.click("#confirm"))
+                        async with asyncio.timeout(5):
+                            while app.return_code is None and (app.session.busy or not cancelling.is_set()):
+                                await asyncio.sleep(0.02)
+                        self.assertIsNone(app.return_code)
+                        self.assertTrue(cancelling.is_set())
+                    finally:
+                        release.set()
+                    async with asyncio.timeout(5):
+                        while app.return_code is None:
+                            await asyncio.sleep(0.02)
+                    launch.assert_not_called()
+        self.assertEqual(app.return_code, 0)
+        operation.assert_awaited_once()
+        with store.claim(complete.id):
+            kept, stopped, untouched = self.disk.read()
+            self.assertEqual(kept, complete)
+            self.assertEqual(replace(stopped, diagnostic=""), active)
+            self.assertEqual(untouched, pending)
 
     async def test_recent_job_is_verified_when_its_queue_row_is_removed(self):
         row = replace(self.entry("Removed&list=SavedPlaylist"), status="failed")

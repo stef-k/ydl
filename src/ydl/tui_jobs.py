@@ -119,13 +119,7 @@ class RecentJobs(Panel):
 
     async def verify(self, session, row_id, previous):
         result = await session.inspect(row_id)
-        if result != previous:
-            session.external_results.pop(row_id, None)
-        if result is None:
-            session.external.pop(row_id, None)
-        else:
-            session.external[row_id] = result
-        session.changed()
+        session.update_external_inspection(row_id, previous, result)
 
     def row_info(self, row_id):
         session = self.app.session
@@ -244,6 +238,13 @@ def verified_download_path(inspection, kind):
     return None
 
 
+def download_folder_problem(job):
+    try:
+        return "" if jobs.inspect_destination(job) else "The download folder is missing."
+    except (OSError, YdlError) as exc:
+        return str(exc)
+
+
 async def open_in_desktop(path):
     try:
         opened = await asyncio.to_thread(
@@ -330,22 +331,38 @@ class Details(Panel):
         kind = event.button.id.removeprefix("open-")
         inspection = self.download_inspection
         if (path := verified_download_path(inspection, kind)) is not None:
-            self.run_worker(self.launch_download(inspection.job, kind, path))
+            self.app.own(self.launch_download(inspection, kind, path))
 
-    async def launch_download(self, job, kind, path):
+    async def launch_download(self, inspection, kind, path):
+        app = self.app
         try:
-            if kind == "folder":
-                if not await asyncio.to_thread(jobs.inspect_destination, job):
-                    raise YdlError("The download folder is missing. Restore it and Recheck the job.")
-            else:
-                current = await jobs.inspect_job(self.app.session.store, self.row_id)
-                if verified_download_path(current, kind) != path:
-                    raise YdlError(current.diagnostic or "The saved media is missing or has changed. Recheck the job.")
-            if not self.app.session.closing:
+            ready = await self.revalidate_download(app.session, inspection, kind, path)
+            if ready and not app.session.closing and self in app.screen_stack:
                 await open_in_desktop(path)
         except (OSError, YdlError) as exc:
-            self.app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error",
-                            markup=False)
+            if not app.session.closing:
+                app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error", markup=False)
+
+    async def revalidate_download(self, session, inspection, kind, path):
+        problem = "The saved media is missing or has changed."
+        if kind == "folder":
+            problem = await asyncio.to_thread(download_folder_problem, inspection.job)
+            if not problem:
+                return True
+
+        current = await session.inspect_for_open(self.row_id, inspection)
+        if current is None:
+            return False
+        if verified_download_path(current, kind) == path:
+            return True
+
+        if session.index.row(self.row_id) is not None:
+            remedy = "Use Recheck from the queue row menu."
+        elif current.state == "unfinished":
+            remedy = "Use Retry selected job to restore missing downloads."
+        else:
+            remedy = "Reopen Recent jobs to verify again."
+        raise YdlError(f"{current.diagnostic or problem}\n{remedy}")
 
     @staticmethod
     def diagnostic(entry, view, inspected, result):
