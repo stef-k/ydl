@@ -394,8 +394,7 @@ class YdlApp(App[int]):
     def answer_quit(self, answer):
         self.quit_dialog = None
         if answer:
-            self.session.closing = True
-            self.session.armed = False
+            self.session.begin_close()
             self.own(self.shutdown())
         else:
             self.quit_answered.set()

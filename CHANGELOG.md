@@ -10,7 +10,8 @@
   Recent jobs shows the latest verified status and offers **Retry selected job**
   for eligible missing downloads.
 - Limit Quit and Ctrl+Q to the main TUI screen. Quit cancels in-progress Open
-  verification and waits for it to release the job lock.
+  verification and pending desktop launches, and waits for verification to
+  release the job lock.
 
 ## 1.0.0 - 2026-11-24
 

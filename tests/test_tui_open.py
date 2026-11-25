@@ -9,8 +9,9 @@ from unittest.mock import patch
 
 from textual.widgets import Button, DataTable
 
-from ydl import jobs
+from ydl import jobs, runner, tui_jobs
 from ydl.models import Settings
+from ydl.tui_dialogs import Confirm
 
 from tui_pilot import PilotCase
 
@@ -68,6 +69,54 @@ class OpenTests(PilotCase):
             with patch("ydl.tui_jobs.subprocess.run", return_value=CompletedProcess([], 0)) as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 self.assertTrue(await pilot.click("#open-folder"))
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
+                self.assertIn("Retry selected job", notify.call_args.args[0])
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+            await pilot.press("escape")
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+
+    async def test_open_folder_blocks_a_track_removed_during_dispatch_checks(self):
+        folder, audio, _ = self.save_job(playlist=True)
+        store = jobs.JobStore(self.paths.state)
+        job_id, = store.recent_ids()
+        with store.claim(job_id):
+            job = store.load(job_id)
+            item = jobs.make_item(2, "Next", "Next song", True)
+            later = folder / f"{item.stem}.mp3"
+            later.write_bytes(b"second track")
+            item.outputs["mp3"] = {"name": later.name, "sha256": hashlib.sha256(later.read_bytes()).hexdigest()}
+            job.items.append(item)
+            store.save(job)
+
+        checking, release = Event(), Event()
+        output_stamp, open_in_desktop = jobs.output_stamp, tui_jobs.open_in_desktop
+
+        def pause_later_track(path):
+            if path == later:
+                checking.set()
+                if not release.wait(5):
+                    raise TimeoutError("Dispatch verification did not resume")
+            return output_stamp(path)
+
+        def pause_dispatch(*args, **kwargs):
+            with patch.object(jobs, "output_stamp", side_effect=pause_later_track):
+                return open_in_desktop(*args, **kwargs)
+
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            with patch.object(tui_jobs, "open_in_desktop", side_effect=pause_dispatch), patch.object(
+                    tui_jobs.subprocess, "run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+                    app, "notify", wraps=app.notify) as notify:
+                try:
+                    self.assertTrue(await pilot.click("#open-folder"))
+                    await self.wait_for(pilot, checking.is_set)
+                    audio.unlink()
+                finally:
+                    release.set()
                 await self.wait_for(pilot, lambda: launch.called or notify.called)
                 launch.assert_not_called()
                 self.assertIn("Retry selected job", notify.call_args.args[0])
@@ -152,6 +201,62 @@ class OpenTests(PilotCase):
             await pilot.press("escape")
             self.assertIn("Needs attention", self.screen_text(app))
             self.assertTrue(app.screen.query_one("#recent-retry", Button).disabled)
+
+    async def test_confirmed_quit_cancels_open_waiting_for_dispatch(self):
+        self.save_job()
+        active, pending = self.entry("Active"), self.entry("Pending")
+        self.disk.save([active, pending])
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        hashing, release_hash, occupied, release_worker = Event(), Event(), Event(), Event()
+        sha256 = jobs._sha256
+
+        def pause_hash(path, *, stop):
+            hashing.set()
+            if not release_hash.wait(5):
+                raise TimeoutError("Receipt verification did not resume")
+            return sha256(path, stop=stop)
+
+        def occupy_worker():
+            occupied.set()
+            release_worker.wait(5)
+
+        async def download(*args, **kwargs):
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                raise runner.AttemptStopped(planned=False) from None
+
+        app = self.app()
+        with patch.object(runner, "download", side_effect=download):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                self.assertTrue(await pilot.click("#primary"))
+                await self.wait_for(pilot, lambda: app.session.active_id == active.id)
+                await self.show_recent_details(pilot, app)
+                with patch.object(jobs, "_sha256", side_effect=pause_hash), patch.object(
+                        tui_jobs.subprocess, "run", return_value=CompletedProcess([], 0)) as launch:
+                    try:
+                        self.assertTrue(await pilot.click("#open-mp3"))
+                        await self.wait_for(pilot, hashing.is_set)
+                        waiting = loop.run_in_executor(None, occupy_worker)
+                        release_hash.set()
+                        await self.wait_for(pilot, occupied.is_set)
+                        await self.wait_for(pilot, lambda: not app.session.inspections)
+                        await pilot.press("escape", "escape", "ctrl+q")
+                        self.assertIsInstance(app.screen, Confirm)
+                        self.assertTrue(await pilot.click("#confirm"))
+                        self.assertTrue(app.session.closing)
+                    finally:
+                        release_hash.set()
+                        release_worker.set()
+                    await waiting
+                    async with asyncio.timeout(5):
+                        while app.return_code is None:
+                            await asyncio.sleep(0.02)
+                    launch.assert_not_called()
+        self.assertEqual(app.return_code, 0)
+        self.assertEqual([row.status for row in self.disk.read()], ["pending", "pending"])
 
     async def test_later_open_verification_updates_recent_job_after_first_result(self):
         _, audio, _ = self.save_job(keep_video=True)

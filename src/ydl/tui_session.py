@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from pathlib import Path
+from threading import Event as ThreadEvent
 
 from . import jobs, runner
 from .models import Event, YdlError
@@ -21,7 +22,7 @@ class QueueSession:
         self.operation = None
         self.armed = False
         self.stopping = False
-        self.closing = False
+        self.quit_requested = ThreadEvent()
         self.active_id = None
         self.events = {}
         self.plans = {}
@@ -54,6 +55,14 @@ class QueueSession:
     @property
     def busy(self):
         return self.serial is not None or self.stopping
+
+    @property
+    def closing(self):
+        return self.quit_requested.is_set()
+
+    def begin_close(self):
+        self.quit_requested.set()
+        self.armed = False
 
     @property
     def media_allowed(self):
@@ -326,7 +335,7 @@ class QueueSession:
 
     async def stop(self, *, quitting=False):
         if quitting:
-            self.closing = True
+            self.begin_close()
             # Cancel reads separately so in-flight queue writes can still settle.
             for task in self.inspections.values():
                 if not task.cancelling():

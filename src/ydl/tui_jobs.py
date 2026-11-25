@@ -250,20 +250,32 @@ def download_folder_problem(inspection):
     return ""
 
 
-def open_in_desktop(path, inspection):
+def open_in_desktop(path, inspection, *, stop):
     """Check the verified paths in the worker that launches gio."""
+    if stop.is_set():
+        raise asyncio.CancelledError
+    folder = Path(inspection.job.destination)
+    playlist = inspection.job.scope == "playlist"
     try:
+        folder_stamp = jobs.output_stamp(folder) if playlist else None
         for media, stamp in inspection.output_stamps.items():
+            if stop.is_set():
+                raise asyncio.CancelledError
             if media != path and jobs.output_stamp(media) != stamp:
                 return f"The saved media is missing or has changed: {media}"
         if problem := download_folder_problem(inspection):
             return problem
-        if path != Path(inspection.job.destination):
+        # A track we already checked may have disappeared while checking another.
+        if playlist and (folder_stamp is None or jobs.output_stamp(folder) != folder_stamp):
+            return "The download folder changed while checking the saved media."
+        if path != folder:
             stamp = inspection.output_stamps.get(path)
             if stamp is None or jobs.output_stamp(path) != stamp:
                 return "The saved media is missing or has changed."
     except OSError as exc:
         return str(exc)
+    if stop.is_set():
+        raise asyncio.CancelledError
     try:
         opened = subprocess.run(
             ["gio", "open", str(path)], stdin=subprocess.DEVNULL,
@@ -369,7 +381,7 @@ class Details(Panel):
             problem = ("The download folder is missing." if current.destination_identity is None
                        else "The download folder has changed.")
         elif verified_download_path(current, kind) == path:
-            problem = await asyncio.to_thread(open_in_desktop, path, current)
+            problem = await asyncio.to_thread(open_in_desktop, path, current, stop=session.quit_requested)
             if not problem:
                 return
             current = await session.inspect(self.row_id, for_open=True)
