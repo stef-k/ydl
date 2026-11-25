@@ -1,6 +1,9 @@
 """Exercise changed download targets through the Job Details Open actions."""
 
+import asyncio
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from subprocess import CompletedProcess
 from threading import Event
 from unittest.mock import patch
 
@@ -50,11 +53,29 @@ class OpenTests(PilotCase):
             self.assertFalse(audio.exists())
             with patch("ydl.tui_jobs.open_in_desktop") as launch, patch.object(app, "notify", wraps=app.notify) as notify:
                 self.assertTrue(await pilot.click("#open-folder"))
-                await self.wait_for(pilot, lambda: launch.await_count or notify.called)
-                launch.assert_not_awaited()
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
                 self.assertIn("folder has changed", notify.call_args.args[0])
             self.assertIn("Incomplete", self.screen_text(app))
             self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+
+    async def test_open_folder_refreshes_recent_job_when_a_track_is_removed(self):
+        _, audio, _ = self.save_job(playlist=True)
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            audio.unlink()
+            with patch("ydl.tui_jobs.subprocess.run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+                    app, "notify", wraps=app.notify) as notify:
+                self.assertTrue(await pilot.click("#open-folder"))
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
+                self.assertIn("Retry selected job", notify.call_args.args[0])
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+            await pilot.press("escape")
+            self.assertIn("Incomplete", self.screen_text(app))
+            self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_open_audio_blocks_a_file_changed_while_checking_retained_video(self):
         folder, audio, video = self.save_job(keep_video=True)
@@ -81,10 +102,56 @@ class OpenTests(PilotCase):
                     replacement.replace(audio)
                 finally:
                     release.set()
-                await self.wait_for(pilot, lambda: launch.await_count or notify.called)
-                launch.assert_not_awaited()
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
                 self.assertIn(str(audio), notify.call_args.args[0])
             self.assertIn("Needs attention", self.screen_text(app))
+
+    async def test_open_audio_blocks_a_file_changed_while_dispatch_waits(self):
+        _, audio, _ = self.save_job()
+        app = self.app()
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        hashing, release_hash = Event(), Event()
+        occupied, release_worker = Event(), Event()
+        sha256 = jobs._sha256
+
+        def pause_hash(path, *, stop):
+            hashing.set()
+            if not release_hash.wait(5):
+                raise TimeoutError("Receipt verification did not resume")
+            return sha256(path, stop=stop)
+
+        def occupy_worker():
+            occupied.set()
+            release_worker.wait(5)
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.show_recent_details(pilot, app)
+            with patch("ydl.tui_jobs.subprocess.run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+                    app, "notify", wraps=app.notify) as notify:
+                try:
+                    with patch.object(jobs, "_sha256", side_effect=pause_hash):
+                        self.assertTrue(await pilot.click("#open-mp3"))
+                        await self.wait_for(pilot, hashing.is_set)
+                        waiting = loop.run_in_executor(None, occupy_worker)
+                        release_hash.set()
+                        await self.wait_for(pilot, occupied.is_set)
+                        await self.wait_for(pilot, lambda: not app.session.inspections)
+                    launch.assert_not_called()
+                    audio.write_bytes(b"changed audio")
+                finally:
+                    release_hash.set()
+                    release_worker.set()
+                await waiting
+                await self.wait_for(pilot, lambda: launch.called or notify.called)
+                launch.assert_not_called()
+                self.assertIn("Move it aside", notify.call_args.args[0])
+            self.assertIn("Needs attention", self.screen_text(app))
+            self.assertTrue(app.screen.query_one("#details-retry", Button).disabled)
+            await pilot.press("escape")
+            self.assertIn("Needs attention", self.screen_text(app))
+            self.assertTrue(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_later_open_verification_updates_recent_job_after_first_result(self):
         _, audio, _ = self.save_job(keep_video=True)
@@ -118,7 +185,7 @@ class OpenTests(PilotCase):
                     first_release.set()
                     second_release.set()
                 await self.wait_for(pilot, lambda: notify.call_count == 2)
-                launch.assert_not_awaited()
+                launch.assert_not_called()
             self.assertIn("Needs attention", self.screen_text(app))
             self.assertTrue(app.screen.query_one("#details-retry", Button).disabled)
             await pilot.press("escape")

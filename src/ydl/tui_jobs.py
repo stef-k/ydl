@@ -250,10 +250,23 @@ def download_folder_problem(inspection):
     return ""
 
 
-async def open_in_desktop(path):
+def open_in_desktop(path, inspection):
+    """Check the verified paths in the worker that launches gio."""
     try:
-        opened = await asyncio.to_thread(
-            subprocess.run, ["gio", "open", str(path)], stdin=subprocess.DEVNULL,
+        for media, stamp in inspection.output_stamps.items():
+            if media != path and jobs.output_stamp(media) != stamp:
+                return f"The saved media is missing or has changed: {media}"
+        if problem := download_folder_problem(inspection):
+            return problem
+        if path != Path(inspection.job.destination):
+            stamp = inspection.output_stamps.get(path)
+            if stamp is None or jobs.output_stamp(path) != stamp:
+                return "The saved media is missing or has changed."
+    except OSError as exc:
+        return str(exc)
+    try:
+        opened = subprocess.run(
+            ["gio", "open", str(path)], stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, timeout=10,
         )
     except FileNotFoundError as exc:
@@ -262,6 +275,7 @@ async def open_in_desktop(path):
         raise YdlError("The desktop opener timed out.") from exc
     if opened.returncode:
         raise YdlError(f"Desktop opener exited with code {opened.returncode}. Check your desktop session and default app.")
+    return ""
 
 
 class Details(Panel):
@@ -341,25 +355,26 @@ class Details(Panel):
     async def launch_download(self, inspection, kind, path):
         app = self.app
         try:
-            ready = await self.revalidate_download(app.session, inspection, kind, path)
-            if ready and not app.session.closing and self in app.screen_stack:
-                await open_in_desktop(path)
+            await self.open_verified_download(app.session, inspection, kind, path)
         except (OSError, YdlError) as exc:
             if not app.session.closing:
                 app.notify(clean_lines(f"{path}\n{exc}"), title="Cannot open download", severity="error", markup=False)
 
-    async def revalidate_download(self, session, inspection, kind, path):
-        problem = "The saved media is missing or has changed."
-        if kind == "folder":
-            problem = await asyncio.to_thread(download_folder_problem, inspection)
-            if not problem:
-                return True
-
+    async def open_verified_download(self, session, inspection, kind, path):
         current = await session.inspect(self.row_id, for_open=True)
-        if current is None:
-            return False
-        if kind != "folder" and verified_download_path(current, kind) == path:
-            return True
+        if current is None or session.closing or self not in self.app.screen_stack:
+            return
+        problem = "The saved media is missing or has changed."
+        if kind == "folder" and current.destination_identity != inspection.destination_identity:
+            problem = ("The download folder is missing." if current.destination_identity is None
+                       else "The download folder has changed.")
+        elif verified_download_path(current, kind) == path:
+            problem = await asyncio.to_thread(open_in_desktop, path, current)
+            if not problem:
+                return
+            current = await session.inspect(self.row_id, for_open=True)
+            if current is None:
+                return
 
         if session.index.row(self.row_id) is not None:
             remedy = "Use Recheck from the queue row menu."
