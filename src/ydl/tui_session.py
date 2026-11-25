@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from pathlib import Path
+from threading import Event as ThreadEvent
 
 from . import jobs, runner
 from .models import Event, YdlError
@@ -21,7 +22,7 @@ class QueueSession:
         self.operation = None
         self.armed = False
         self.stopping = False
-        self.closing = False
+        self.quit_requested = ThreadEvent()
         self.active_id = None
         self.events = {}
         self.plans = {}
@@ -54,6 +55,14 @@ class QueueSession:
     @property
     def busy(self):
         return self.serial is not None or self.stopping
+
+    @property
+    def closing(self):
+        return self.quit_requested.is_set()
+
+    def begin_close(self):
+        self.quit_requested.set()
+        self.armed = False
 
     @property
     def media_allowed(self):
@@ -247,23 +256,31 @@ class QueueSession:
             display = View(labels[status], observation)
         return settled, display
 
-    async def inspect(self, row_id, entry=None):
+    async def inspect(self, row_id, entry=None, *, for_open=False, before_hash=None):
+        if for_open:
+            entry = self.index.row(row_id)
         if self.closing or (entry is None and self.index.row(row_id) is not None):
             return None
-        if (previous := self.inspections.get(row_id)) is not None:
+        while (previous := self.inspections.get(row_id)) is not None:
             # A recovered row supersedes a Recent jobs read. A removed row lets its recheck finish.
-            if entry is not None and not previous.cancelling():
+            if entry is not None and not for_open and not previous.cancelling():
                 previous.cancel()
             await asyncio.wait((previous,))
             if self.closing or (entry is None and self.index.row(row_id) is not None):
                 return None
-        task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None))
+        # Sample the cache after waiting so a later Open can publish after an earlier one.
+        prior_external = self.external.get(row_id) if for_open and entry is None else None
+        task = asyncio.create_task(jobs.inspect_job(self.store, row_id, enqueued=Path(entry.output) if entry else None,
+                                                    before_hash=before_hash))
         self.inspections[row_id] = task
         try:
             observation = await task
             if entry is None and observation.state == "missing":
                 diagnostic = missing_plan_message(self.store, row_id, check_again="reopen Recent jobs")
-                return replace(observation, diagnostic=diagnostic)
+                observation = replace(observation, diagnostic=diagnostic)
+            if (prior_external is not None and observation != prior_external and
+                    self.external.get(row_id) is prior_external and self.index.row(row_id) is None):
+                self.update_external_inspection(row_id, prior_external, observation)
             return observation
         except asyncio.CancelledError:
             if not (self.closing or (entry is None and self.index.row(row_id) is not None)):
@@ -271,6 +288,15 @@ class QueueSession:
         finally:
             if self.inspections.get(row_id) is task:
                 del self.inspections[row_id]
+
+    def update_external_inspection(self, row_id, previous, observation):
+        if observation != previous:
+            self.external_results.pop(row_id, None)
+        if observation is None:
+            self.external.pop(row_id, None)
+        else:
+            self.external[row_id] = observation
+        self.changed()
 
     async def entry_result(self, entry, result):
         if result.declined:
@@ -310,7 +336,7 @@ class QueueSession:
 
     async def stop(self, *, quitting=False):
         if quitting:
-            self.closing = True
+            self.begin_close()
             # Cancel reads separately so in-flight queue writes can still settle.
             for task in self.inspections.values():
                 if not task.cancelling():

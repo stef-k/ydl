@@ -24,6 +24,7 @@ from .process import inherit_lock
 
 JOB_ID = re.compile(r"[0-9a-f]{32}")
 EXTENSION = re.compile(r"\.[a-zA-Z0-9]{1,12}")
+OutputStamp = tuple[int, int, int, int, int]
 
 
 class JobBusy(YdlError):
@@ -95,8 +96,7 @@ def safe_name(text, fallback):
 def make_item(position, video_id, title, playlist):
     label = safe_name(title, "Untitled")
     prefix = f"{position:03d} - " if playlist else ""
-    stem = f"{prefix}{label} [{video_id}]" if video_id else f"{prefix}{label}"
-    return Item(position, video_id, title, stem)
+    return Item(position, video_id, title, f"{prefix}{label}")
 
 
 def component(name):
@@ -111,9 +111,15 @@ def local_directory(path, *, create=True):
             path.mkdir(mode=0o700)
         except FileExistsError:
             pass
-    if not stat.S_ISDIR(path.lstat().st_mode):
-        raise YdlError(f"Expected a real directory at {path}. Move the conflicting entry or choose another output.")
+    _directory_stat(path)
     return path
+
+
+def _directory_stat(path):
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise YdlError(f"Expected a real directory at {path}. Move the conflicting entry or choose another output.")
+    return info
 
 
 def safe_destination(path, *, remedy="Restore the folder and Recheck."):
@@ -271,7 +277,8 @@ class JobStore:
             yield
 
 
-async def _run_file_check(check, *args):
+async def run_file_check(check, *args):
+    """Run a cancellable filesystem check and join it before releasing caller-owned resources."""
     stop = Event()
     worker = asyncio.create_task(asyncio.to_thread(check, *args, stop=stop))
     try:
@@ -301,13 +308,13 @@ def collision(path):
 
 
 async def pending_outputs(job, item):
-    missing, _, error = await _run_file_check(_check_item_outputs, job, item)
+    missing, _, error = await run_file_check(_check_item_outputs, job, item)
     if error is not None:
         raise error
     return missing
 
 
-def _check_item_outputs(job, item, *, stop):
+def _check_item_outputs(job, item, *, stop, before_hash=None):
     if stop.is_set():
         raise asyncio.CancelledError
     destination = Path(job.destination)
@@ -315,28 +322,52 @@ def _check_item_outputs(job, item, *, stop):
     if job.keep_video:
         names["video"] = item.outputs.get("video", {}).get("name", item.video_target)
     missing = {}
-    mp3 = None
-    for kind, name in names.items():
-        path = destination / component(name) if name is not None else None
-        try:
-            verified = path is not None and _verify_output(path, item.outputs.get(kind, {}), stop=stop)
-        except (OSError, YdlError) as exc:
-            return missing, mp3, exc
-        if not verified:
-            missing[kind] = path if kind == "mp3" or kind in item.outputs else None
-        elif kind == "mp3":
-            mp3 = path
-    return missing, mp3, None
-
-
-def _verify_output(path, receipt, *, stop):
+    verified = {}
     try:
-        mode = path.lstat().st_mode
-        if (receipt.get("name") == path.name and stat.S_ISREG(mode)
-                and _sha256(path, stop=stop) == receipt.get("sha256")):
-            return True
+        for kind, name in names.items():
+            path = destination / component(name) if name is not None else None
+            stamp = _verify_output(path, item.outputs.get(kind, {}), stop, before_hash) if path is not None else None
+            if stamp is None:
+                missing[kind] = path if kind == "mp3" or kind in item.outputs else None
+                continue
+            verified[kind] = path, stamp
+
+        # The MP3 may have changed while we hashed the retained video.
+        for kind, (path, stamp) in tuple(verified.items()):
+            current = output_stamp(path)
+            if current == stamp:
+                continue
+            del verified[kind]
+            if current is not None:
+                raise collision(path)
+            missing[kind] = path
+    except (OSError, YdlError) as exc:
+        return missing, verified, exc
+    return missing, verified, None
+
+
+def _file_stamp(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def output_stamp(path):
+    """Read the identity and change times of an output without following symlinks."""
+    try:
+        return _file_stamp(path.lstat())
     except FileNotFoundError:
-        return False
+        return None
+
+
+def _verify_output(path, receipt, stop, before_hash):
+    try:
+        info = path.lstat()
+        if receipt.get("name") == path.name and stat.S_ISREG(info.st_mode):
+            if before_hash is not None:
+                before_hash(path)
+            if _sha256(path, stop=stop) == receipt.get("sha256"):
+                return _file_stamp(info)
+    except FileNotFoundError:
+        return None
     raise collision(path)
 
 
@@ -347,28 +378,32 @@ class Inspection:
     verified: int = 0
     output: Path | None = None
     diagnostic: str = ""
+    destination_identity: tuple[int, int] | None = None
+    # Dispatch uses these stamps without treating a metadata change as a new job status.
+    output_stamps: dict[Path, OutputStamp] = field(default_factory=dict, compare=False, repr=False)
 
 
 def inspect_destination(job):
+    """Validate the saved folder and return its identity when present."""
     destination = Path(job.destination)
     if job.enqueued_base is not None:
         safe_destination(Path(job.enqueued_base))
-        return safe_destination(destination) is not None
+        return safe_destination(destination)
     try:
-        local_directory(destination, create=False)
+        info = _directory_stat(destination)
     except FileNotFoundError:
-        return False
+        return None
     if not os.access(destination, os.R_OK | os.X_OK):
         raise YdlError(f"Cannot access saved destination: {destination}")
-    return True
+    return info.st_dev, info.st_ino
 
 
-async def inspect_job(store, job_id, *, enqueued=None):
-    """Inspect the plan and its receipts under the same lock used for retry."""
-    return await _run_file_check(_inspect_job, store, job_id, enqueued)
+async def inspect_job(store, job_id, *, enqueued=None, before_hash=None):
+    """Inspect under the retry lock, calling before_hash(path) before each receipt read."""
+    return await run_file_check(_inspect_job, store, job_id, enqueued, before_hash)
 
 
-def _inspect_job(store, job_id, enqueued, *, stop):
+def _inspect_job(store, job_id, enqueued, before_hash, *, stop):
     job = None
     try:
         with store.observe(job_id):
@@ -378,7 +413,7 @@ def _inspect_job(store, job_id, enqueued, *, stop):
                 job = store.load(job_id, admit=True)
             if enqueued is not None:
                 safe_destination(enqueued)
-            return _inspect_outputs(job, stop=stop)
+            return _inspect_outputs(job, stop=stop, before_hash=before_hash)
     except MissingPlan:
         if enqueued is not None:
             try:
@@ -390,22 +425,26 @@ def _inspect_job(store, job_id, enqueued, *, stop):
         return Inspection("blocked", job, diagnostic=str(exc))
 
 
-def _inspect_outputs(job, *, stop):
+def _inspect_outputs(job, *, stop, before_hash=None):
     output = Path(job.destination) if job.scope == "playlist" else None
-    if not inspect_destination(job):
+    destination_identity = inspect_destination(job)
+    if destination_identity is None:
         return Inspection("unfinished", job, output=output)
     verified = 0
     diagnostic = ""
+    output_stamps = {}
     for item in job.items:
-        missing, mp3, error = _check_item_outputs(job, item, stop=stop)
-        if job.scope == "single" and item.position == 1:
-            output = mp3
+        missing, item_outputs, error = _check_item_outputs(job, item, stop=stop, before_hash=before_hash)
+        if job.scope == "single" and item.position == 1 and "mp3" in item_outputs:
+            output = item_outputs["mp3"][0]
         if error is not None:
             diagnostic = diagnostic or str(error)
         elif not missing and item.video_id:
             verified += 1
+            output_stamps.update(item_outputs.values())
     state = "blocked" if diagnostic else "complete" if verified == len(job.items) else "unfinished"
-    return Inspection(state, job, verified, output, diagnostic)
+    return Inspection(state, job, verified, output, diagnostic, destination_identity,
+                      output_stamps=output_stamps if state == "complete" else {})
 
 
 def staging_path(job, item):
@@ -436,7 +475,7 @@ async def publish(store, job, item, outputs, guard=None):
     for kind, (staged, target) in outputs.items():
         if os.path.lexists(target):
             raise collision(target)
-        receipts[kind] = {"name": target.name, "sha256": await _run_file_check(_sha256, staged)}
+        receipts[kind] = {"name": target.name, "sha256": await run_file_check(_sha256, staged)}
     item.outputs.update(receipts)
     store.save(job)
     for staged, target in outputs.values():

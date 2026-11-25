@@ -105,8 +105,9 @@ class CliTests(unittest.TestCase):
         return next(directory.glob("*.json")).stem
 
     def test_single_audio_default_publishes_real_mp3_and_preserves_collision(self):
+        self.write_scenario(title="Sample song [OFFICIAL VIDEO]")
         self.check_code(self.fetch(MIXED, "--yes"), 0)
-        mp3 = self.output / "Sample song [testVideo01].mp3"
+        mp3 = self.output / "Sample song [OFFICIAL VIDEO].mp3"
         self.assertGreater(mp3.stat().st_size, 500)
         with mp3.open("rb") as stream:
             contents = stream.read()
@@ -120,7 +121,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.calls(), calls)
         shutil.copyfile(Path(__file__).with_name("fake_ytdlp.py"), self.backend)
         self.backend.chmod(0o700)
-        duplicate = self.fetch(VIDEO, "--yes")
+        duplicate = self.fetch(VIDEO.replace("testVideo01", "testVideo02"), "--yes")
         self.check_code(duplicate, 1)
         self.assertIn("Output already exists", duplicate.stderr)
         self.assertEqual(mp3.read_bytes(), contents)
@@ -140,8 +141,8 @@ class CliTests(unittest.TestCase):
         preferences = self.root / "config" / "ydl" / "config.toml"
         preferences.write_text(preferences.read_text().replace("auto_update = true", "auto_update = false"))
         self.check_code(self.fetch(VIDEO, "--yes"), 0)
-        video = self.output / "Sample song [testVideo01].mkv"
-        mp3 = self.output / "Sample song [testVideo01].mp3"
+        video = self.output / "Sample song.mkv"
+        mp3 = self.output / "Sample song.mp3"
         saved = mp3.stat()
         # Keep the verification receipts and model interruption between the two publications.
         video.unlink()
@@ -185,12 +186,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("2 MP3 files, 1 failed", blocked.stderr)
         self.assertIn("private", blocked.stderr)
         folder = self.output / "Test playlist [testPlaylist01]"
-        first = folder / "001 - Sample song [testVideo01].mp3"
+        first = folder / "001 - Sample song.mp3"
         old = first.stat().st_mtime_ns
         self.write_scenario(entries=[third, ENTRY])
         self.check_code(self.invoke("retry"), 0)
         self.assertEqual(first.stat().st_mtime_ns, old)
-        self.assertTrue((folder / "002 - Second [testVideo02].mp3").is_file())
+        self.assertTrue((folder / "002 - Second.mp3").is_file())
         self.assertTrue(self.calls()[-1][-1].endswith(second["id"]))
         self.assertEqual(len(self.calls()), 5)
 

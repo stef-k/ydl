@@ -21,7 +21,7 @@ class Panel(ModalScreen):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
     heading = ""
     initial_focus = "#cancel"
-    global_controls = True
+    show_queue_stop = True
     ready = False
 
     def compose(self):
@@ -31,10 +31,9 @@ class Panel(ModalScreen):
                 yield from self.body()
             with Horizontal(classes="dialog-controls"):
                 yield from self.buttons()
-            if self.global_controls:
+            if self.show_queue_stop:
                 with Horizontal(classes="dialog-global"):
                     yield button("Stop queue", "modal-stop", "error")
-                    yield button("Quit", "modal-quit")
 
     def buttons(self):
         yield button("Close", "cancel")
@@ -53,7 +52,7 @@ class Panel(ModalScreen):
         self.query_one(".dialog-body").styles.max_height = max(2, self.app.size.height - 7)
 
     def sync(self):
-        if self.global_controls:
+        if self.show_queue_stop:
             stop = self.query_one("#modal-stop", Button)
             stop.display = self.app.session.busy
             stop.disabled = self.app.session.stopping
@@ -70,17 +69,13 @@ class Panel(ModalScreen):
     def stop_pressed(self):
         self.app.action_stop()
 
-    @on(Button.Pressed, "#modal-quit")
-    def quit_pressed(self):
-        self.app.action_quit()
-
 
 class Confirm(Panel):
     def __init__(self, heading, question, accept="Confirm", cancel="Cancel", *, quits=False):
         super().__init__()
         self.heading, self.question = heading, question
         self.accept, self.cancel = accept, cancel
-        self.global_controls = not quits
+        self.show_queue_stop = not quits
 
     def body(self):
         yield Static(clean(self.question), markup=False)
@@ -484,7 +479,7 @@ class HelpPanel(Panel):
                      "Delete            Remove selected row\n"
                      "C                 Clear completed\n"
                      "Ctrl+C            Stop queue\n"
-                     "Ctrl+Q            Quit\n"
+                     "Ctrl+Q            Quit from the main screen\n"
                      "?                 Help\n\n"
                      "Use the terminal’s paste command to paste URLs, one per line.\n"
                      "Keep the output directory in place during a download.", markup=False)
