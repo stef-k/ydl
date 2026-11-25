@@ -279,7 +279,7 @@ class PilotTests(PilotCase):
             self.assertEqual(app.screen.query_one(TextArea).text, URL + "B")
             self.assertTrue(app.session.index.runnable)
 
-    async def test_quit_modal_stay_then_stop_and_quit_preserves_pending(self):
+    async def test_quit_is_dashboard_only_and_preserves_pending(self):
         row, pending = [self.entry(name) for name in "AB"]
         self.disk.save([row, pending])
         app = self.app()
@@ -287,6 +287,7 @@ class PilotTests(PilotCase):
         async def download(*_args, decide, **_kwargs):
             try:
                 await decide(Decision("Download the entire playlist (52 entries)?", (("y", "Yes"), ("n", "No")), "n"))
+                await asyncio.Future()
             except asyncio.CancelledError:
                 raise runner.AttemptStopped(planned=False) from None
 
@@ -296,13 +297,20 @@ class PilotTests(PilotCase):
                 await pilot.click("#primary")
                 await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt) and app.screen.ready)
                 prompt = app.screen
-                self.assertTrue(await pilot.click("#modal-quit"))
+                await pilot.press("ctrl+q")
+                self.assertIs(app.screen, prompt)
+                self.assertFalse(prompt.query("#modal-quit"))
+
+                self.assertTrue(await pilot.click("#choice-0"))
+                await self.wait_for(pilot, lambda: app.screen is app.dashboard)
+                self.assertTrue(await pilot.click("#quit"))
+                self.assertIsInstance(app.screen, Confirm)
                 self.assertEqual(app.focused.id, "cancel")
                 await pilot.press("enter")
-                self.assertIs(app.screen, prompt)
+                self.assertIs(app.screen, app.dashboard)
                 self.assertTrue(app.session.busy)
                 await pilot.press("ctrl+q")
-                await pilot.click("#confirm")
+                self.assertTrue(await pilot.click("#confirm"))
                 async with asyncio.timeout(5):
                     while app.return_value is None:
                         await asyncio.sleep(0.02)

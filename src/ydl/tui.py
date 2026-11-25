@@ -376,13 +376,10 @@ class YdlApp(App[int]):
             self.own(self.session.stop())
 
     def action_quit(self):
-        if self.quit_dialog is not None or self.session.closing:
+        if self.dashboard is None or self.screen is not self.dashboard or self.session.closing:
             return
         active = self.session.busy or self.session.backend.check is not None
         draft = self.dashboard.query_one("#draft", TextArea).text
-        add_dialog = next((screen for screen in self.screen_stack if isinstance(screen, AddURLs)), None)
-        if add_dialog is not None:
-            draft = add_dialog.query_one(TextArea).text
         loss = self.session.index.error and (draft.strip() or self.recovery_draft or self.session.index.buffer)
         if active or loss:
             question = "Stop the current operation and quit?" if active else "Quit ydl?"

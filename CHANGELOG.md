@@ -6,6 +6,7 @@
   continue to use their original filenames.
 - Open the download folder, MP3 or retained video from Job Details for
   completed jobs in the queue and Recent jobs.
+- Limit Quit and Ctrl+Q to the main TUI screen.
 
 ## 1.0.0 - 2026-11-24
 

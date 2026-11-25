@@ -130,7 +130,8 @@ automatically generated mixes are not supported.
 Completed downloads stay in the queue until you use **Clear completed** or
 **Remove selected**. Both actions keep downloaded files, saved jobs and logs.
 
-Use **Help** for keyboard shortcuts or **Ctrl+Q** to quit.
+Use **Help** for keyboard shortcuts. From the main screen, click **Quit** or
+press **Ctrl+Q** to exit.
 
 ## Command line
 
