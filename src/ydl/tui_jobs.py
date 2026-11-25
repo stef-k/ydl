@@ -2,6 +2,7 @@
 
 import asyncio
 import subprocess
+from itertools import chain
 from pathlib import Path
 
 from rich.table import Table
@@ -250,18 +251,20 @@ def download_folder_problem(inspection):
     return ""
 
 
-def open_in_desktop(path, inspection, *, stop):
-    """Check the verified paths in the worker that launches gio."""
+def dispatch_problem(path, inspection, *, stop):
     if stop.is_set():
         raise asyncio.CancelledError
     folder = Path(inspection.job.destination)
     playlist = inspection.job.scope == "playlist"
+    stamps = inspection.output_stamps
     try:
         folder_stamp = jobs.output_stamp(folder) if playlist else None
-        for media, stamp in inspection.output_stamps.items():
+        # Revisit earlier paths after checking the rest. In-place writes change
+        # the file's stamp without changing the directory's stamp.
+        for media in chain(stamps, reversed(stamps)):
             if stop.is_set():
                 raise asyncio.CancelledError
-            if media != path and jobs.output_stamp(media) != stamp:
+            if jobs.output_stamp(media) != stamps[media]:
                 return f"The saved media is missing or has changed: {media}"
         if problem := download_folder_problem(inspection):
             return problem
@@ -269,24 +272,39 @@ def open_in_desktop(path, inspection, *, stop):
         if playlist and (folder_stamp is None or jobs.output_stamp(folder) != folder_stamp):
             return "The download folder changed while checking the saved media."
         if path != folder:
-            stamp = inspection.output_stamps.get(path)
+            stamp = stamps.get(path)
             if stamp is None or jobs.output_stamp(path) != stamp:
                 return "The saved media is missing or has changed."
     except OSError as exc:
         return str(exc)
     if stop.is_set():
         raise asyncio.CancelledError
+    return ""
+
+
+async def open_in_desktop(path, inspection, *, stop):
+    problem = await asyncio.to_thread(dispatch_problem, path, inspection, stop=stop)
+    # Quit and process creation run on the same event loop, with no yield between
+    # this check and starting gio. Only the wait for gio runs off the loop.
+    if stop.is_set():
+        raise asyncio.CancelledError
+    if problem:
+        return problem
     try:
-        opened = subprocess.run(
+        opened = subprocess.Popen(
             ["gio", "open", str(path)], stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except FileNotFoundError as exc:
         raise YdlError("Install gio (libglib2.0-bin on Linux Mint and Ubuntu).") from exc
+    try:
+        code = await asyncio.to_thread(opened.wait, timeout=10)
     except subprocess.TimeoutExpired as exc:
+        opened.kill()
+        await asyncio.to_thread(opened.wait)
         raise YdlError("The desktop opener timed out.") from exc
-    if opened.returncode:
-        raise YdlError(f"Desktop opener exited with code {opened.returncode}. Check your desktop session and default app.")
+    if code:
+        raise YdlError(f"Desktop opener exited with code {code}. Check your desktop session and default app.")
     return ""
 
 
@@ -381,7 +399,7 @@ class Details(Panel):
             problem = ("The download folder is missing." if current.destination_identity is None
                        else "The download folder has changed.")
         elif verified_download_path(current, kind) == path:
-            problem = await asyncio.to_thread(open_in_desktop, path, current, stop=session.quit_requested)
+            problem = await open_in_desktop(path, current, stop=session.quit_requested)
             if not problem:
                 return
             current = await session.inspect(self.row_id, for_open=True)

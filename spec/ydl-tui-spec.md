@@ -232,7 +232,7 @@ Open Job Details for the selected queue row or recent job, with the **Progress**
 
 Job Details offers **Retry selected entry** for a queued row or **Retry selected job** for a recent job outside the queue. Apply the same eligibility and worker rules as their other entry points. Retry targets the whole saved job's unfinished work. There is no retry for an individual track within a playlist.
 
-For verified Complete jobs, the Progress tab offers **Open folder** for the saved destination. Single-video jobs also offer **Open audio** and, when the original video was retained, **Open video**. Revalidate the saved destination and media receipts for every Open action, including playlist folders. Check that the verified paths still match in the worker that invokes `gio open`. Report a missing path, failed verification, or failed launch in the TUI. These actions work from both the queue and Recent jobs.
+For verified Complete jobs, the Progress tab offers **Open folder** for the saved destination. Single-video jobs also offer **Open audio** and, when the original video was retained, **Open video**. Revalidate the saved destination and media receipts for every Open action, including playlist folders. Recheck the verified paths during dispatch before starting `gio open`. Report a missing path, failed verification, or failed launch in the TUI. These actions work from both the queue and Recent jobs.
 
 If revalidation finds unavailable output for a job outside the queue, update Job Details and Recent jobs with the new status. Offer **Retry selected job** for missing output when retry is eligible. Quit cancels in-flight Open verification and any Open waiting to invoke the desktop opener. Wait for verification to release the job lock before exit.
 

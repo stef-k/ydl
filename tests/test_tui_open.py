@@ -3,8 +3,7 @@
 import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from subprocess import CompletedProcess
-from threading import Event
+from threading import Event, get_ident
 from unittest.mock import patch
 
 from textual.widgets import Button, DataTable
@@ -66,7 +65,7 @@ class OpenTests(PilotCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
             audio.unlink()
-            with patch("ydl.tui_jobs.subprocess.run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+            with patch.object(tui_jobs.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 self.assertTrue(await pilot.click("#open-folder"))
                 await self.wait_for(pilot, lambda: launch.called or notify.called)
@@ -79,6 +78,13 @@ class OpenTests(PilotCase):
             self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_open_folder_blocks_a_track_removed_during_dispatch_checks(self):
+        await self.check_playlist_dispatch_change(lambda path: path.unlink(), "Incomplete", "Retry selected job")
+
+    async def test_open_folder_blocks_a_track_overwritten_during_dispatch_checks(self):
+        await self.check_playlist_dispatch_change(lambda path: path.write_bytes(b"new"), "Needs attention",
+                                                  "Move it aside")
+
+    async def check_playlist_dispatch_change(self, change, status, diagnostic):
         folder, audio, _ = self.save_job(playlist=True)
         store = jobs.JobStore(self.paths.state)
         job_id, = store.recent_ids()
@@ -92,7 +98,7 @@ class OpenTests(PilotCase):
             store.save(job)
 
         checking, release = Event(), Event()
-        output_stamp, open_in_desktop = jobs.output_stamp, tui_jobs.open_in_desktop
+        output_stamp, dispatch_problem = jobs.output_stamp, tui_jobs.dispatch_problem
 
         def pause_later_track(path):
             if path == later:
@@ -103,28 +109,28 @@ class OpenTests(PilotCase):
 
         def pause_dispatch(*args, **kwargs):
             with patch.object(jobs, "output_stamp", side_effect=pause_later_track):
-                return open_in_desktop(*args, **kwargs)
+                return dispatch_problem(*args, **kwargs)
 
         app = self.app()
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
-            with patch.object(tui_jobs, "open_in_desktop", side_effect=pause_dispatch), patch.object(
-                    tui_jobs.subprocess, "run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+            with patch.object(tui_jobs, "dispatch_problem", side_effect=pause_dispatch), patch.object(
+                    tui_jobs.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 try:
                     self.assertTrue(await pilot.click("#open-folder"))
                     await self.wait_for(pilot, checking.is_set)
-                    audio.unlink()
+                    change(audio)
                 finally:
                     release.set()
                 await self.wait_for(pilot, lambda: launch.called or notify.called)
                 launch.assert_not_called()
-                self.assertIn("Retry selected job", notify.call_args.args[0])
-            self.assertIn("Incomplete", self.screen_text(app))
-            self.assertFalse(app.screen.query_one("#details-retry", Button).disabled)
+                self.assertIn(diagnostic, notify.call_args.args[0])
+            self.assertIn(status, self.screen_text(app))
+            self.assertEqual(app.screen.query_one("#details-retry", Button).disabled, status != "Incomplete")
             await pilot.press("escape")
-            self.assertIn("Incomplete", self.screen_text(app))
-            self.assertFalse(app.screen.query_one("#recent-retry", Button).disabled)
+            self.assertIn(status, self.screen_text(app))
+            self.assertEqual(app.screen.query_one("#recent-retry", Button).disabled, status != "Incomplete")
 
     async def test_open_audio_blocks_a_file_changed_while_checking_retained_video(self):
         folder, audio, video = self.save_job(keep_video=True)
@@ -177,7 +183,7 @@ class OpenTests(PilotCase):
 
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
-            with patch("ydl.tui_jobs.subprocess.run", return_value=CompletedProcess([], 0)) as launch, patch.object(
+            with patch.object(tui_jobs.subprocess, "Popen") as launch, patch.object(
                     app, "notify", wraps=app.notify) as notify:
                 try:
                     with patch.object(jobs, "_sha256", side_effect=pause_hash):
@@ -203,13 +209,24 @@ class OpenTests(PilotCase):
             self.assertTrue(app.screen.query_one("#recent-retry", Button).disabled)
 
     async def test_confirmed_quit_cancels_open_waiting_for_dispatch(self):
+        await self.quit_with_pending_open(after_checks=False)
+
+    async def test_confirmed_quit_cancels_open_after_worker_checks(self):
+        await self.quit_with_pending_open(after_checks=True)
+
+    async def quit_with_pending_open(self, *, after_checks):
         self.save_job()
         active, pending = self.entry("Active"), self.entry("Pending")
         self.disk.save([active, pending])
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
         hashing, release_hash, occupied, release_worker = Event(), Event(), Event(), Event()
+        folder_checked = Event()
         sha256 = jobs._sha256
+        folder_problem = tui_jobs.download_folder_problem
+        app = self.app()
+        read_stop = app.session.quit_requested.is_set
+        ui_thread = get_ident()
 
         def pause_hash(path, *, stop):
             hashing.set()
@@ -219,7 +236,20 @@ class OpenTests(PilotCase):
 
         def occupy_worker():
             occupied.set()
-            release_worker.wait(5)
+            if not release_worker.wait(5):
+                raise TimeoutError("Desktop dispatch did not resume")
+
+        def check_folder(inspection):
+            problem = folder_problem(inspection)
+            folder_checked.set()
+            return problem
+
+        def check_stop():
+            stopped = read_stop()
+            if after_checks and folder_checked.is_set() and get_ident() != ui_thread:
+                # Simulate Quit arriving just after the worker read a clear stop flag.
+                occupy_worker()
+            return stopped
 
         async def download(*args, **kwargs):
             try:
@@ -227,7 +257,6 @@ class OpenTests(PilotCase):
             except asyncio.CancelledError:
                 raise runner.AttemptStopped(planned=False) from None
 
-        app = self.app()
         with patch.object(runner, "download", side_effect=download):
             async with app.run_test(size=(80, 24)) as pilot:
                 await self.ready(pilot, app)
@@ -235,11 +264,15 @@ class OpenTests(PilotCase):
                 await self.wait_for(pilot, lambda: app.session.active_id == active.id)
                 await self.show_recent_details(pilot, app)
                 with patch.object(jobs, "_sha256", side_effect=pause_hash), patch.object(
-                        tui_jobs.subprocess, "run", return_value=CompletedProcess([], 0)) as launch:
+                        tui_jobs, "download_folder_problem", side_effect=check_folder), patch.object(
+                        app.session.quit_requested, "is_set", side_effect=check_stop), patch.object(
+                        tui_jobs.subprocess, "Popen") as launch:
+                    waiting = None
                     try:
                         self.assertTrue(await pilot.click("#open-mp3"))
                         await self.wait_for(pilot, hashing.is_set)
-                        waiting = loop.run_in_executor(None, occupy_worker)
+                        if not after_checks:
+                            waiting = loop.run_in_executor(None, occupy_worker)
                         release_hash.set()
                         await self.wait_for(pilot, occupied.is_set)
                         await self.wait_for(pilot, lambda: not app.session.inspections)
@@ -250,7 +283,8 @@ class OpenTests(PilotCase):
                     finally:
                         release_hash.set()
                         release_worker.set()
-                    await waiting
+                    if waiting is not None:
+                        await waiting
                     async with asyncio.timeout(5):
                         while app.return_code is None:
                             await asyncio.sleep(0.02)
