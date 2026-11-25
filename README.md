@@ -13,9 +13,8 @@ downloads.
 - Resume interrupted downloads and retry failed ones without re-downloading
   verified files.
 
-By default, MP3 files are saved to `~/Downloads/ydl/` and named after their video
-titles. If a new download's filename already exists, choose another destination
-or move the existing file before retrying.
+By default, ydl saves MP3 files to `~/Downloads/ydl/`. New single-video downloads
+use `Title.mp3`. Retrying an earlier job uses the filename saved with that job.
 
 [Install](#install) · [Interactive mode](#interactive-mode) · [Command line](#command-line) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
 
@@ -103,8 +102,9 @@ Use your mouse or keyboard to manage downloads.
 3. Click **Add to Queue**, review your links and click **Add**.
 4. Click **Start queue** to begin downloading.
 
-ydl processes the queue one entry at a time and shows download progress,
-speed and estimated time remaining when available.
+ydl processes the queue one entry at a time. **Active transfer** shows progress,
+speed and estimated time remaining for the current item when available. A
+playlist occupies one queue row, and Active transfer shows its current track.
 
 The **Scope** option lets you choose between a single video and an entire
 playlist. Leave it on **Auto** if you are unsure; ydl will ask when a link
@@ -117,21 +117,24 @@ automatically generated mixes are not supported.
 - **Stop queue** stops the current work. Your queue is saved automatically.
   When you reopen the app, select **Start queue** or **Resume queue** when you return.
 - **Retry failed** retries failed downloads.
+- Scroll long queues with the mouse wheel, or focus the queue and use Up and Down.
 - Use the menu next to a queue entry to move pending downloads, retry eligible
   jobs, recheck their status or remove them.
-- Open **Job Details** by double-clicking a row to see its destination and log.
-  For completed jobs, **Open folder** opens the download directory. **Open audio**
-  and **Open video** launch the available files from a single-video job in your
-  desktop's default apps. These actions use `gio`.
-- **Recent jobs** lets you view saved downloads, including those started from
-  the command line, open completed downloads and retry eligible unfinished jobs.
+- Double-click a row in the queue or **Recent jobs** to open **Job Details**.
+  In the **Progress** tab of a completed job, use **Open folder** to see the
+  download directory. For a single-video job, use **Open audio** to play the MP3
+  or **Open video** if you kept the video. These actions use your desktop's
+  default apps through `gio`.
+- **Recent jobs** shows up to 20 saved jobs, including downloads started from
+  the command line and those cleared from the queue. You can also retry
+  eligible unfinished jobs there.
 - **Settings** changes your default download options.
 
 Completed downloads stay in the queue until you use **Clear completed** or
 **Remove selected**. Both actions keep downloaded files, saved jobs and logs.
 
-Use **Help** for keyboard shortcuts. From the main screen, click **Quit** or
-press **Ctrl+Q** to exit.
+Use **Help** for keyboard shortcuts. Close any open dialog with **Close**, **Cancel**,
+or **Esc** before using **Quit** or **Ctrl+Q** on the main screen.
 
 ## Command line
 
@@ -150,9 +153,9 @@ current preference (MP3 only by default). Keep the quotes around links.
 ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
 ```
 
-Playlist tracks are numbered and saved in a separate folder. If the link points
-to a video within a playlist, ydl asks whether to download that video or the
-whole playlist.
+Playlist tracks are numbered, for example `001 - Title.mp3`, and saved in a
+separate folder. If the link points to a video within a playlist, ydl asks
+whether to download that video or the whole playlist.
 
 ### Common options
 
@@ -210,9 +213,10 @@ in the interactive app, or one of these commands:
 | `ydl update --check` | Check for an available yt-dlp update without installing it. |
 
 If a queue entry shows **Needs attention**, open its details, fix the reported
-problem and select **Recheck** from its menu. If a file already exists and
-conflicts with a download, ydl will not overwrite it. Move it aside before
-retrying, or start a new download in a different folder.
+problem and select **Recheck** from its menu. Two videos with the same title can
+resolve to the same filename in one folder. ydl reports the collision and keeps
+the existing file. Move it aside before retrying, or start a new download in a
+different folder.
 
 <details>
 <summary>Queue recovery and log files</summary>
