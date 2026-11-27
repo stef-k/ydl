@@ -48,8 +48,9 @@ If you only want the command line, use `pipx install .` instead.
 <details>
 <summary>Already installed ydl or need a different installation method?</summary>
 
-To add the interactive interface to an existing pipx installation, run
-`pipx install --force '.[tui]'` from the cloned repository.
+To update an existing pipx installation, run `git pull --ff-only` from the cloned
+repository, then `pipx install --force '.[tui]'`. For a command-line-only update,
+use `pipx install --force .`.
 
 If your compatible Python is installed as `python3.11`, use
 `pipx install --python python3.11 '.[tui]'`.
@@ -133,10 +134,12 @@ automatically generated mixes are not supported.
 - **Settings** changes the defaults for future queue entries.
 
 **Remove from queue on success** waits for every track in a playlist to have
-a verified MP3 and, if you kept the video, a verified video. The saved job
-and its outputs remain available in **Recent jobs**. Use **Clear completed**
-or **Remove selected** for completed entries that stay in the queue. Both
-actions keep downloaded files, saved jobs and logs.
+a verified MP3 and, if you kept the video, a verified video. Failed and
+interrupted entries stay queued, and a successful retry can remove them.
+Restoring or rechecking the queue keeps completed entries for manual clearing.
+The saved job and its outputs remain available in **Recent jobs**. Use
+**Clear completed** or **Remove selected** for completed entries that stay in
+the queue. Both actions keep downloaded files, saved jobs and logs.
 
 Use **Help** for keyboard shortcuts. Close any open dialog with **Close**, **Cancel**,
 or **Esc** before using **Quit** or **Ctrl+Q** on the main screen.
