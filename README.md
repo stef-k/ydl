@@ -48,8 +48,9 @@ If you only want the command line, use `pipx install .` instead.
 <details>
 <summary>Already installed ydl or need a different installation method?</summary>
 
-To add the interactive interface to an existing pipx installation, run
-`pipx install --force '.[tui]'` from the cloned repository.
+To update an existing pipx installation, run `git pull --ff-only` from the cloned
+repository, then `pipx install --force '.[tui]'`. For a command-line-only update,
+use `pipx install --force .`.
 
 If your compatible Python is installed as `python3.11`, use
 `pipx install --python python3.11 '.[tui]'`.
@@ -99,7 +100,9 @@ Use your mouse or keyboard to manage downloads.
 
 1. Paste one or more YouTube links, one per line.
 2. Choose your MP3 quality, destination folder and whether to keep the video.
-3. Click **Add to Queue**, review your links and click **Add**.
+   Check **Remove from queue on success** to remove each entry in this batch
+   after ydl verifies its saved outputs.
+3. Click **Add to Queue**, review your links and choices, and click **Add**.
 4. Click **Start queue** to begin downloading.
 
 ydl processes the queue one entry at a time. **Active transfer** shows progress,
@@ -128,10 +131,15 @@ automatically generated mixes are not supported.
 - **Recent jobs** shows up to 20 saved jobs, including downloads started from
   the command line and those cleared from the queue. You can also retry
   eligible unfinished jobs there.
-- **Settings** changes your default download options.
+- **Settings** changes the defaults for future queue entries.
 
-Completed downloads stay in the queue until you use **Clear completed** or
-**Remove selected**. Both actions keep downloaded files, saved jobs and logs.
+**Remove from queue on success** waits for every track in a playlist to have
+a verified MP3 and, if you kept the video, a verified video. Failed and
+interrupted entries stay queued, and a successful retry can remove them.
+Restoring or rechecking the queue keeps completed entries for manual clearing.
+The saved job and its outputs remain available in **Recent jobs**. Use
+**Clear completed** or **Remove selected** for completed entries that stay in
+the queue. Both actions keep downloaded files, saved jobs and logs.
 
 Use **Help** for keyboard shortcuts. Close any open dialog with **Close**, **Cancel**,
 or **Esc** before using **Quit** or **Ctrl+Q** on the main screen.
@@ -185,11 +193,12 @@ Run `ydl --help` for all available options.
 Change your preferences in the interactive app under **Settings**, or from the
 command line using `ydl config set`.
 
-| Setting | Default | Example command |
+| Setting | Default | How to change it |
 | --- | --- | --- |
 | Download folder | `~/Downloads/ydl/` | `ydl config set output "$HOME/Music"` |
 | MP3 quality | `0` (highest VBR quality) | `ydl config set quality 192K` |
 | Keep video | No | `ydl config set keep_video true` |
+| Remove from queue on success | Off | TUI **Settings → General** |
 | yt-dlp release channel | Nightly | `ydl config set channel stable` |
 
 Run `ydl config show` to view your current settings. Command-line options

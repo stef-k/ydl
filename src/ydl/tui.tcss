@@ -25,16 +25,18 @@ TextArea .text-area--selection { background: #245baf; }
 .panel { height: auto; border: solid $ydl-outline; background: $ydl-panel; }
 #form { padding: 0 1; }
 #form-options { height: auto; }
-#media-options { height: auto; }
+#media-options, #media-selects, #entry-toggles { height: auto; }
+#media-selects, #entry-toggles { width: auto; }
 #media-options .form-line { width: auto; }
 #form .form-line { margin-bottom: 0; }
 .form-line { height: 1; margin-bottom: 1; }
 .form-line .field-label { width: auto; padding: 0 1 0 0; }
-.url-line { height: 3; }
-#draft { width: 1fr; height: 3; margin-right: 1; }
+.url-line { height: 2; }
+#draft { width: 1fr; height: 100%; margin-right: 1; }
 #add-urls { margin: 0; }
-#scope { width: 22; margin-right: 2; }
-#quality { width: 11; margin-right: 2; }
+#scope { width: 20; margin-right: 1; }
+#quality { width: 11; margin-right: 1; }
+#retain { margin-right: 1; }
 #destination, #settings-output { width: 1fr; margin-right: 1; }
 FormError { height: auto; color: #ffb47a; }
 /* Match Textual's two-row mouse-wheel step while leaving room for the queue. */
@@ -67,13 +69,19 @@ Dashboard.-tall #notice-scroll.-restored { border: solid $ydl-outline; max-heigh
 #recover { margin-right: 0; }
 
 Dashboard.-wide #tagline { display: block; }
-Dashboard.-inline-options #media-options, Dashboard.-wide #media-options { layout: horizontal; }
+Dashboard.-inline-toggles .url-line, Dashboard.-inline-media .url-line, Dashboard.-tall .url-line { height: 3; }
+Dashboard.-inline-toggles #entry-toggles,
+Dashboard.-inline-options #entry-toggles,
+Dashboard.-wide #entry-toggles,
+Dashboard.-inline-options #media-selects,
+Dashboard.-wide #media-selects,
+Dashboard.-inline-media #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
 Dashboard.-wide.-standard-height #action-area { dock: none; }
 Dashboard.-tall #form-error-scroll { max-height: 3; }
 Dashboard.-wide.-tall .panel { margin-bottom: 1; }
 Dashboard.-inline-destination.-tall #form-options { layout: horizontal; }
-Dashboard.-inline-destination.-tall #media-options { width: 72; }
+Dashboard.-inline-destination.-tall #media-options { width: auto; }
 Dashboard.-wide.-tall #transfer { height: 4; padding: 1; }
 Dashboard.-wide #controls { padding: 0 1; }
 Dashboard.-wide #controls Button { padding: 0 1; margin-right: 1; }

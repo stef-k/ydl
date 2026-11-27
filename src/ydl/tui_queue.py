@@ -27,12 +27,14 @@ class Entry:
     output: str
     status: str = "pending"
     diagnostic: str = ""
+    remove_on_success: bool = False
 
     @classmethod
-    def from_url(cls, url, scope, quality, keep_video, output):
+    def from_url(cls, url, scope, quality, keep_video, output, *, remove_on_success=False):
         address = media.parse_url(url)
         media.validate_scope(address, scope)
-        return cls(uuid4().hex, address.canonical(), scope, quality, keep_video, str(output))
+        return cls(uuid4().hex, address.canonical(), scope, quality, keep_video, str(output),
+                   remove_on_success=remove_on_success)
 
     def validate(self):
         identifier = UUID(self.id)
@@ -46,7 +48,8 @@ class Entry:
         output = Path(self.output)
         if not output.is_absolute() or ".." in output.parts or "\x00" in self.output:
             raise ValueError("invalid queue destination")
-        if type(self.keep_video) is not bool or self.status not in HINTS or not isinstance(self.diagnostic, str):
+        if (type(self.keep_video) is not bool or type(self.remove_on_success) is not bool
+                or self.status not in HINTS or not isinstance(self.diagnostic, str)):
             raise ValueError("invalid queue options or state")
 
 
@@ -310,10 +313,19 @@ class QueueIndex:
         self.changed()
         return prior
 
-    async def settle(self, result, view):
+    async def settle(self, result, view, *, remove=False):
+        """Save the settled snapshot and report whether the row was removed."""
         async with self.lock:
             if self.error:
                 self.buffer[result.id] = result
-            elif await self.save(with_result(self.rows, result), required=True, result=result):
+                self.changed()
+                return False
+            rows = [row for row in self.rows if row.id != result.id] if remove else with_result(self.rows, result)
+            if not await self.save(rows, required=True, result=result):
+                return False
+            if remove:
+                self.views.pop(result.id, None)
+            else:
                 self.views[result.id] = view
             self.changed()
+            return remove

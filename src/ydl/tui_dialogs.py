@@ -146,15 +146,17 @@ class AddURLs(Panel):
     heading = "Add URLs"
     initial_focus = "#batch-draft"
 
-    def __init__(self, draft, options):
+    def __init__(self, draft, options, *, remove_on_success):
         super().__init__()
         self.original, self.options = draft, options
+        self.remove_on_success = remove_on_success
         self.saving = False
         self.recovery_draft = None
 
     def body(self):
         scope, quality, keep_video, output = self.options
         yield Static(f"{scope.capitalize()} · MP3 {quality} · Keep video {'on' if keep_video else 'off'}\n"
+                     f"Remove from queue on success · {'Yes' if self.remove_on_success else 'No'}\n"
                      f"Save to {clean(output)}", markup=False)
         yield TextArea(self.original, id="batch-draft", placeholder="Paste YouTube URLs · one per line",
                        compact=True, soft_wrap=False, tab_behavior="focus")
@@ -201,7 +203,7 @@ class AddURLs(Panel):
             if not raw.strip():
                 continue
             try:
-                entry = Entry.from_url(raw.strip(), *self.options)
+                entry = Entry.from_url(raw.strip(), *self.options, remove_on_success=self.remove_on_success)
             except YdlError as exc:
                 rejected.append((line_number, raw, str(exc)))
                 continue
@@ -400,6 +402,8 @@ class SettingsPanel(Panel):
                     yield Label("MP3 quality", classes="setting-label")
                     yield select(quality_options(prefs.quality), prefs.quality, "settings-quality")
                 yield Checkbox("Keep original video by default", prefs.keep_video, id="settings-video", compact=True)
+                yield Checkbox("Remove from queue on success", prefs.remove_on_success,
+                               id="settings-remove-on-success", compact=True)
             with TabPane("Backend", id="backend-settings"):
                 yield Checkbox("Auto-update backend (yt-dlp)", prefs.auto_update, id="settings-update", compact=True)
                 with Horizontal(classes="setting-row"):
@@ -447,6 +451,7 @@ class SettingsPanel(Panel):
         values = dict(output=output.value,
                       quality=self.query_one("#settings-quality", Select).value,
                       keep_video=self.query_one("#settings-video", Checkbox).value,
+                      remove_on_success=self.query_one("#settings-remove-on-success", Checkbox).value,
                       auto_update=self.query_one("#settings-update", Checkbox).value,
                       channel=self.query_one("#settings-channel", Select).value)
         try:

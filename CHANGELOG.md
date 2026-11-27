@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 - 2026-11-27
+
+- Add **Remove from queue on success** for TUI batches, with an unchecked default
+  in Settings → General. Remove each opted-in row after a successful download or
+  retry verifies every requested output. Keep the saved job and media available
+  in Recent jobs.
+- Keep the removal checkbox label readable when resizing the dashboard, including
+  at the width where the queue adds its Type, Track progress and Output columns.
+
 ## 1.1.0 - 2026-11-25
 
 - Use video titles without appended IDs for new media filenames. Saved jobs

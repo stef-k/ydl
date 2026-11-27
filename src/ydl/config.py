@@ -43,6 +43,7 @@ class Preferences:
     keep_video: bool = False
     auto_update: bool = True
     channel: str = "nightly"
+    remove_on_success: bool = False
 
 
 def quality_value(value):
@@ -68,7 +69,7 @@ def validate(values):
     for key, value in values.items():
         if key not in Preferences.__dataclass_fields__:
             raise YdlError(f"Unknown configuration key: {key}", 2)
-        if key in ("keep_video", "auto_update") and type(value) is not bool:
+        if key in ("keep_video", "auto_update", "remove_on_success") and type(value) is not bool:
             raise YdlError(f"{key} must be true or false.", 2)
     prefs = Preferences(**values)
     if prefs.channel not in ("stable", "nightly"):
