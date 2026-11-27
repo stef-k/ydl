@@ -69,13 +69,13 @@ Dashboard.-tall #notice-scroll.-restored { border: solid $ydl-outline; max-heigh
 #recover { margin-right: 0; }
 
 Dashboard.-wide #tagline { display: block; }
-Dashboard.-inline-toggles .url-line, Dashboard.-wide .url-line, Dashboard.-tall .url-line { height: 3; }
+Dashboard.-inline-toggles .url-line, Dashboard.-inline-media .url-line, Dashboard.-tall .url-line { height: 3; }
 Dashboard.-inline-toggles #entry-toggles,
 Dashboard.-inline-options #entry-toggles,
 Dashboard.-wide #entry-toggles,
 Dashboard.-inline-options #media-selects,
 Dashboard.-wide #media-selects,
-Dashboard.-wide #media-options { layout: horizontal; }
+Dashboard.-inline-media #media-options { layout: horizontal; }
 Dashboard.-wide.-tall #header { height: 3; border: solid $ydl-outline; margin-bottom: 1; }
 Dashboard.-wide.-standard-height #action-area { dock: none; }
 Dashboard.-tall #form-error-scroll { max-height: 3; }

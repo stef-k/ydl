@@ -144,6 +144,17 @@ class QueueRemovalTests(SessionCase):
 
 
 class RemovalOptionsTests(PilotCase):
+    async def test_remove_on_success_label_fits_at_layout_breakpoints(self):
+        self.disk.save([self.entry("Pending")])
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            for size in ((52, 24), (54, 24), (100, 26), (105, 26)):
+                with self.subTest(size=size):
+                    await pilot.resize_terminal(*size)
+                    await pilot.pause()
+                    self.assertIn("Remove from queue on success", self.screen_text(app))
+
     def test_remove_on_success_rejects_non_boolean_values(self):
         self.paths.config.write_text('remove_on_success = "false"\n')
         with self.assertRaisesRegex(YdlError, "remove_on_success must be true or false"):

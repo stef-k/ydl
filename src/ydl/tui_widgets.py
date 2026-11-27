@@ -269,7 +269,10 @@ class Dashboard(Screen):
         self.app.call_after_refresh(self.app.startup, self)
 
     def on_resize(self, event):
-        self.set_class(event.size.width >= 140, "-inline-destination")
+        width = event.size.width
+        # Media options need more room than the wide queue columns.
+        self.set_class(width >= 105, "-inline-media")
+        self.set_class(width >= 140, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.refresh_after_resize)
 

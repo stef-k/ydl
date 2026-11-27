@@ -27,7 +27,7 @@ class YdlApp(App[int]):
     CSS_PATH = "tui.tcss"
     TITLE = "ydl"
     ENABLE_COMMAND_PALETTE = False
-    HORIZONTAL_BREAKPOINTS = [(52, "-inline-toggles"), (75, "-inline-options"), (100, "-wide")]
+    HORIZONTAL_BREAKPOINTS = [(54, "-inline-toggles"), (75, "-inline-options"), (100, "-wide")]
     BINDINGS = [
         Binding("a", "add", show=False), Binding("r", "retry_selected", show=False),
         Binding("R", "retry_failed", show=False), Binding("d", "details", show=False),
