@@ -192,6 +192,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(dangling.readlink(), self.root / "missing")
         self.assertFalse(dangling.exists())
 
+    def test_retry_refuses_a_playlist_folder_claimed_by_another_job(self):
+        preferences = self.root / "config" / "ydl" / "config.toml"
+        preferences.parent.mkdir(parents=True)
+        preferences.write_text("auto_update = false\n")
+        self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
+        job_id = self.job_id()
+        folder = self.output / "Test playlist"
+        folder.rename(self.root / "moved-original")
+        self.write_scenario(entries=[{"id": "testVideo02", "title": "New track"}])
+        self.check_code(self.fetch(PLAYLIST.replace("testPlaylist01", "testPlaylist02"), "--yes"), 0)
+        new_track = folder / "001 - New track.mp3"
+        receipt = new_track.read_bytes()
+        calls = self.calls()
+
+        retry = self.invoke("retry", job_id)
+        self.check_code(retry, 1)
+        self.assertIn("another job", retry.stderr)
+        self.assertIn(str(folder), retry.stderr)
+        self.assertEqual(self.calls(), calls)
+        self.assertEqual(list(folder.glob("*.mp3")), [new_track])
+        self.assertEqual(new_track.read_bytes(), receipt)
+
+        folder.rename(self.root / "moved-new")
+        self.check_code(self.invoke("retry", job_id), 0)
+        self.assertEqual(list(folder.glob("*.mp3")), [folder / "001 - Sample song.mp3"])
+        self.check_code(self.invoke("retry", job_id), 0)
+        self.assertEqual(len(self.calls()), len(calls) + 1)
+
     def test_retry_uses_saved_playlist_order_and_skips_completed_items(self):
         second = {"id": "testVideo02", "title": "Second"}
         third = {"id": "testVideo03", "title": "Third"}

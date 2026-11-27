@@ -4,7 +4,8 @@
 
 - Use playlist titles as folder names for new downloads. If a name is occupied,
   use the next available numbered name, starting with `(2)`. Retries use the
-  original folder recorded in the saved job.
+  original folder recorded in the saved job and stop if a different job has
+  claimed that path.
 
 ## 1.2.0 - 2026-11-27
 

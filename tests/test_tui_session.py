@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from ydl import config, jobs, media, process, runner
 from ydl.models import Result, YdlError
+from ydl.tui_queue import Entry
 
 from tui_session_fixture import SessionCase
 
@@ -485,6 +486,32 @@ while True:
         elsewhere.rename(self.output)
         await session.index.recheck(row.id)
         self.assertEqual(session.index.view(row.id).status, "Interrupted")
+
+    async def test_new_playlist_cannot_create_a_folder_through_a_replaced_destination(self):
+        row = Entry.from_url("https://www.youtube.com/playlist?list=List", "playlist", "0", False, self.output)
+        session = await self.start(row)
+        transfer = self.offline_media()
+        redirected = self.root / "redirected"
+        redirected.mkdir()
+        original = self.root / "original"
+        real_mkdir = Path.mkdir
+
+        def replace_destination(path, *args, **kwargs):
+            result = real_mkdir(path, *args, **kwargs)
+            if path == self.output and not original.exists():
+                path.rename(original)
+                path.symlink_to(redirected)
+            return result
+
+        metadata = {"title": "Playlist title", "entries": [{"id": "Track", "title": "Track"}]}
+        with patch.object(media, "metadata", return_value=metadata), patch.object(Path, "mkdir", replace_destination):
+            await self.run_queue(session, "start")
+
+        transfer.assert_not_awaited()
+        self.assertEqual(session.index.view(row.id).status, "Needs attention")
+        self.assertFalse(self.store.path(row.id).exists())
+        self.assertTrue(self.output.is_symlink())
+        self.assertEqual(list(redirected.iterdir()), [])
 
     async def test_destination_change_after_preplan_retry_keeps_plan_required(self):
         row = self.entry("A", status="failed_before_plan")

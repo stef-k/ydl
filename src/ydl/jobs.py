@@ -14,7 +14,9 @@ import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from itertools import count
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 
 from .config import admitted_read, atomic_write, quality_value
@@ -24,7 +26,9 @@ from .process import inherit_lock
 
 JOB_ID = re.compile(r"[0-9a-f]{32}")
 EXTENSION = re.compile(r"\.[a-zA-Z0-9]{1,12}")
+PLAYLIST_OWNER = ".ydl-playlist-job"
 OutputStamp = tuple[int, int, int, int, int]
+DirectoryIdentity = tuple[int, int]
 
 
 class JobBusy(YdlError):
@@ -73,11 +77,13 @@ class Job:
     items: list[Item]
     complete: bool = False
     enqueued_base: str | None = None
+    owns_playlist_folder: bool = False
 
     @classmethod
-    def create(cls, job_id, settings, items, *, enqueued_base=None):
+    def create(cls, job_id, settings, items, *, enqueued_base=None, owns_playlist_folder=False):
         return cls(job_id, time.time_ns(), settings.scope, str(settings.destination),
-                   settings.quality, settings.keep_video, items, enqueued_base=enqueued_base)
+                   settings.quality, settings.keep_video, items, enqueued_base=enqueued_base,
+                   owns_playlist_folder=owns_playlist_folder)
 
     @property
     def settings(self):
@@ -105,12 +111,11 @@ def component(name):
     return name
 
 
-def local_directory(path, *, create=True):
-    if create:
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
+def local_directory(path):
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
     _directory_stat(path)
     return path
 
@@ -139,21 +144,124 @@ def safe_destination(path, *, remedy="Restore the folder and Recheck."):
     return info.st_dev, info.st_ino
 
 
+def inspect_local_directory(destination):
+    try:
+        info = _directory_stat(destination)
+    except FileNotFoundError:
+        return None
+    if not os.access(destination, os.R_OK | os.X_OK):
+        raise YdlError(f"Cannot access saved destination: {destination}")
+    return info.st_dev, info.st_ino
+
+
+def destination_identity(path, check_ancestors):
+    return safe_destination(path) if check_ancestors else inspect_local_directory(path)
+
+
 @dataclass(frozen=True)
 class DestinationGuard:
-    identities: dict[Path, tuple[int, int]]
+    identities: dict[Path, DirectoryIdentity]
+    playlist_owner: tuple[Path, str] | None = None
+    check_ancestors: bool = True
 
     @classmethod
-    def capture(cls, base, destination):
-        guard = cls({path: safe_destination(path) for path in (base, destination)})
+    def capture(cls, base, destination, *, owner=None, check_ancestors=True):
+        identities = {path: destination_identity(path, check_ancestors) for path in (base, destination)}
+        guard = cls(identities, (destination, owner) if owner is not None else None, check_ancestors)
         guard.check()
         return guard
 
     def check(self):
-        for path, expected in self.identities.items():
-            if expected is None or safe_destination(path) != expected:
-                raise DestinationChanged(f"Destination changed during the download: {path}. "
-                                         "Restore the original folder and Recheck.")
+        try:
+            for path, expected in self.identities.items():
+                if expected is None or destination_identity(path, self.check_ancestors) != expected:
+                    raise DestinationChanged(f"Destination changed during the download: {path}. "
+                                             "Restore the original folder and Recheck.")
+            if self.playlist_owner is not None:
+                check_playlist_owner(*self.playlist_owner, required=True)
+        except DestinationChanged:
+            raise
+        except (OSError, YdlError) as exc:
+            raise DestinationChanged(str(exc)) from exc
+
+
+def check_playlist_owner(destination, job_id, *, required):
+    marker = destination / PLAYLIST_OWNER
+    expected = job_id.encode("ascii")
+    try:
+        fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if not required:
+            return
+        reason = "its ydl job marker is missing"
+    except OSError as exc:
+        raise DestinationChanged(f"Cannot read playlist job marker {marker}: {exc}") from exc
+    else:
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode) and os.read(fd, len(expected) + 1) == expected:
+                return
+        finally:
+            os.close(fd)
+        reason = "its ydl job marker belongs to another job or is invalid"
+    raise DestinationChanged(f"Cannot use playlist folder {destination}: {reason}. "
+                             "Restore the original folder, or move this folder aside and retry.")
+
+
+@contextmanager
+def open_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def playlist_base_changed(base):
+    return DestinationChanged(f"Destination changed during planning: {base}. Restore the folder and Recheck.")
+
+
+def place_playlist_folder(staged, destination, base_fd, base_guard, *, numbered):
+    for number in count(1):
+        candidate = destination if number == 1 else destination.with_name(f"{destination.name} ({number})")
+        base_guard.check()
+        try:
+            rename_without_replace(staged, candidate, parent_fd=base_fd)
+        except FileExistsError:
+            if not numbered:
+                raise
+        else:
+            return candidate
+
+
+def claim_playlist_folder(destination, job_id, *, numbered=False, expected_base=None, check_ancestors=True):
+    """Publish a marked directory as one operation, relative to the validated parent."""
+    base = destination.parent
+    base_identity = destination_identity(base, check_ancestors)
+    if base_identity is None or (expected_base is not None and base_identity != expected_base):
+        raise playlist_base_changed(base)
+    base_guard = DestinationGuard({base: base_identity}, check_ancestors=check_ancestors)
+    with open_directory(base) as base_fd:
+        info = os.fstat(base_fd)
+        if (info.st_dev, info.st_ino) != base_identity:
+            raise playlist_base_changed(base)
+        # Stage under the open parent so a path replacement cannot redirect writes.
+        try:
+            staging = TemporaryDirectory(dir=f"/proc/self/fd/{base_fd}", prefix=".ydl-playlist-")
+        except OSError as exc:
+            raise OSError(exc.errno, exc.strerror, base) from exc
+        with staging as temporary:
+            staged = Path(temporary) / "folder"
+            staged.mkdir(mode=0o700)
+            atomic_write(staged / PLAYLIST_OWNER, job_id.encode("ascii"))
+            with open_directory(staged) as staged_fd:
+                info = os.fstat(staged_fd)
+                identity = info.st_dev, info.st_ino
+                os.fsync(staged_fd)
+            claimed = place_playlist_folder(staged, destination, base_fd, base_guard, numbered=numbered)
+            os.fsync(base_fd)
+    guard = DestinationGuard({base: base_identity, claimed: identity}, (claimed, job_id), check_ancestors)
+    guard.check()
+    return claimed, guard
 
 
 def validate_item(item, position):
@@ -180,6 +288,8 @@ def validate_job(raw, job_id):
         raise ValueError("invalid job ID or destination")
     if job.scope not in ("single", "playlist") or type(job.keep_video) is not bool:
         raise ValueError("invalid saved settings")
+    if type(job.owns_playlist_folder) is not bool or (job.owns_playlist_folder and job.scope != "playlist"):
+        raise ValueError("invalid playlist folder ownership setting")
     if type(job.created_at) is not int or type(job.complete) is not bool or not items:
         raise ValueError("invalid job timestamp, completion flag or item list")
     if job.enqueued_base is not None:
@@ -204,7 +314,10 @@ class JobStore:
         return self.directory / f"{job_id}.json"
 
     def save(self, job):
-        atomic_write(self.path(job.id), json.dumps(asdict(job), ensure_ascii=True).encode(), durable=True)
+        fields = asdict(job)
+        if not job.owns_playlist_folder:
+            del fields["owns_playlist_folder"]
+        atomic_write(self.path(job.id), json.dumps(fields, ensure_ascii=True).encode(), durable=True)
 
     def load(self, job_id, *, admit=False):
         path = self.path(job_id)
@@ -388,14 +501,34 @@ def inspect_destination(job):
     destination = Path(job.destination)
     if job.enqueued_base is not None:
         safe_destination(Path(job.enqueued_base))
-        return safe_destination(destination)
-    try:
-        info = _directory_stat(destination)
-    except FileNotFoundError:
-        return None
-    if not os.access(destination, os.R_OK | os.X_OK):
-        raise YdlError(f"Cannot access saved destination: {destination}")
-    return info.st_dev, info.st_ino
+    identity = destination_identity(destination, job.enqueued_base is not None)
+    if identity is not None and job.scope == "playlist":
+        check_playlist_owner(destination, job.id, required=job.owns_playlist_folder)
+    return identity
+
+
+def resume_destination(job):
+    destination = Path(job.destination)
+    base = destination.parent
+    identity = inspect_destination(job)
+    queued = job.enqueued_base is not None
+    if job.owns_playlist_folder:
+        if identity is None:
+            base.mkdir(parents=True, exist_ok=True)
+            try:
+                _, guard = claim_playlist_folder(destination, job.id, check_ancestors=queued)
+            except FileExistsError:
+                pass  # Check the folder that won the path before using it.
+            else:
+                return guard
+        return DestinationGuard.capture(base, destination, owner=job.id, check_ancestors=queued)
+
+    base.mkdir(parents=True, exist_ok=True)
+    local_directory(destination)
+    if job.scope == "playlist":
+        inspect_destination(job)
+    if queued:
+        return DestinationGuard.capture(Path(job.enqueued_base), destination)
 
 
 async def inspect_job(store, job_id, *, enqueued=None, before_hash=None):
@@ -493,12 +626,19 @@ def publish_file(staged, target):
     except OSError as exc:
         if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):
             raise
-        # Linux supports atomic no-replace rename on filesystems without hard links.
-        at_fdcwd, rename_noreplace = -100, 1
-        libc = ctypes.CDLL(None, use_errno=True)
-        if libc.renameat2(at_fdcwd, os.fsencode(staged), at_fdcwd, os.fsencode(target), rename_noreplace):
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error), target) from exc
+        try:
+            rename_without_replace(staged, target)
+        except OSError as rename_error:
+            raise rename_error from exc
+
+
+def rename_without_replace(staged, target, *, parent_fd=None):
+    at_fdcwd, rename_noreplace = -100, 1
+    target_fd, name = (at_fdcwd, target) if parent_fd is None else (parent_fd, target.name)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renameat2(at_fdcwd, os.fsencode(staged), target_fd, os.fsencode(name), rename_noreplace):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), target)
 
 
 def remove_staging(staging):

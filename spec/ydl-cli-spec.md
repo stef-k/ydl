@@ -133,7 +133,9 @@ channel = "nightly"
 
 Name a new single download `Title.mp3` and a new playlist download `Playlist title/001 - Title.mp3`. Keep video IDs in the job plan and use the saved destination and stems on retry, including names with ID suffixes from earlier versions. Use the original one-based playlist position and pad shorter positions to three digits, including gaps for unavailable entries. Sanitize names and keep all generated paths within the resolved output directory. A retained video uses the same stem and the verified video's container extension.
 
-For a new playlist job, create a fresh folder. If an entry already occupies the title-based path, try `Playlist title (2)`, `Playlist title (3)`, and so on until directory creation succeeds. Leave existing entries in place, including directories, files, and symlinks. When retrying, reject a symlink or other non-directory at the saved folder path.
+For a new playlist job, claim a fresh folder atomically with its hidden `.ydl-playlist-job` ownership marker. If an entry already occupies the title-based path, try `Playlist title (2)`, `Playlist title (3)`, and so on until the claim succeeds. Leave existing entries in place, including directories, files, and symlinks. Report other filesystem errors.
+
+When retrying, reject a symlink, another non-directory entry, or a folder marked for a different job at the saved path. For a job saved with ownership tracking, require its marker in any existing folder at that path. If the path is absent, recreate the folder and marker under the same name. Earlier plans remain compatible with unmarked folders.
 
 An occupied file target is a collision unless it is a regular file matching the saved verification record for that job and item. A new job cannot reuse a file based on its name. For a collision, preserve the file, fail the affected item, name the path, and explain how to continue after moving the file or starting a new job with `--output`. Publish final files atomically with no overwrite, including when another process claims the path during the download.
 

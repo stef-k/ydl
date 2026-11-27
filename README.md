@@ -165,7 +165,10 @@ ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
 
 Playlist tracks are numbered, for example `001 - Title.mp3`, and saved in a
 folder named after the playlist. If that name is taken, ydl tries `Playlist title (2)`,
-`Playlist title (3)`, and so on. Retrying a job uses its original folder.
+`Playlist title (3)`, and so on. Retrying a job uses its original folder. If
+another job has claimed that path, restore the original folder or move the
+replacement aside before retrying. Keep the hidden `.ydl-playlist-job` file
+with the playlist when copying or moving the folder.
 If the link points to a video within a playlist, ydl asks whether to download
 that video or the whole playlist.
 
