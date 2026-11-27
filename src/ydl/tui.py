@@ -27,7 +27,7 @@ class YdlApp(App[int]):
     CSS_PATH = "tui.tcss"
     TITLE = "ydl"
     ENABLE_COMMAND_PALETTE = False
-    HORIZONTAL_BREAKPOINTS = [(75, "-inline-options"), (100, "-wide")]
+    HORIZONTAL_BREAKPOINTS = [(52, "-inline-toggles"), (75, "-inline-options"), (100, "-wide")]
     BINDINGS = [
         Binding("a", "add", show=False), Binding("r", "retry_selected", show=False),
         Binding("R", "retry_failed", show=False), Binding("d", "details", show=False),
@@ -242,7 +242,8 @@ class YdlApp(App[int]):
         self.dashboard.set_form_error("")
         scope = self.dashboard.query_one("#scope", Select).value
         retain = self.dashboard.query_one("#retain").value
-        self.show(AddURLs(draft.text, (scope, selected_quality, retain, output)),
+        remove = self.dashboard.query_one("#remove-on-success").value
+        self.show(AddURLs(draft.text, (scope, selected_quality, retain, output), remove_on_success=remove),
                   lambda text: draft.load_text(text) if text is not None else None)
 
     def primary(self):

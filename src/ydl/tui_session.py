@@ -203,6 +203,7 @@ class QueueSession:
 
     async def run_entry(self, mode, entry, view, prefs):
         settled, display = entry, view
+        remove = False
         self.operation = asyncio.create_task(self.invoke(mode, entry.id, prefs, entry=entry, planned=view.planned))
         try:
             result = await self.operation
@@ -213,9 +214,15 @@ class QueueSession:
             if result is not None:
                 settled, display = await self.entry_result(entry, result)
                 display = replace(display, result=result)
+                remove = (entry.remove_on_success and display.inspection is not None
+                          and display.inspection.state == "complete"
+                          and not (result.declined or result.failed or result.attention
+                                   or result.output_conflict or result.destination_changed))
         finally:
             self.operation = None
-        await self.index.settle(settled, display)
+        if await self.index.settle(settled, display, remove=remove):
+            self.external[entry.id] = display.inspection
+            self.external_results[entry.id] = display.result
         self.plans.pop(entry.id, None)
         self.active_id = None
         self.changed()

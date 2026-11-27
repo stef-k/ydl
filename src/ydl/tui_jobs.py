@@ -25,6 +25,23 @@ ROW_ACTIONS = (("details", "Details"), ("retry-selected", "Retry selected entry"
 DOWNLOAD_ACTIONS = (("folder", "Open folder"), ("mp3", "Open audio"), ("video", "Open video"))
 
 
+def refresh_saved_job(app, row_id):
+    session = app.session
+    # Settlement publishes its verified inspection when it clears the active ID.
+    if session.closing or row_id in (session.active_id, session.external_retry_id):
+        return
+    if row_id in session.external and session.external[row_id] is None:
+        return
+    previous = session.external.get(row_id)
+    session.external[row_id] = None
+    app.own(verify_saved_job(session, row_id, previous))
+
+
+async def verify_saved_job(session, row_id, previous):
+    result = await session.inspect(row_id)
+    session.update_external_inspection(row_id, previous, result)
+
+
 class RowMenu(Panel):
     heading = "Queue row actions"
     initial_focus = "#details"
@@ -109,18 +126,7 @@ class RecentJobs(Panel):
         if row_id not in self.refresh_ids:
             return
         self.refresh_ids.remove(row_id)
-        if session.closing or session.external_retry_id == row_id:
-            return
-        # A verification can outlive the panel that requested it.
-        if row_id in session.external and session.external[row_id] is None:
-            return
-        previous = session.external.get(row_id)
-        session.external[row_id] = None
-        self.app.own(self.verify(session, row_id, previous))
-
-    async def verify(self, session, row_id, previous):
-        result = await session.inspect(row_id)
-        session.update_external_inspection(row_id, previous, result)
+        refresh_saved_job(self.app, row_id)
 
     def row_info(self, row_id):
         session = self.app.session
@@ -280,6 +286,8 @@ class Details(Panel):
             inspected, result = view.inspection, view.result
         else:
             view = None
+            if row_id not in session.external:
+                refresh_saved_job(self.app, row_id)
             inspected = session.external.get(row_id)
             result = session.external_results.get(row_id) if inspected else None
         job = inspected.job if inspected else None
@@ -395,11 +403,11 @@ class Details(Panel):
     def info_text(self, entry, inspected, job, plan, settings, diagnostic):
         values = dict.fromkeys(("Reserved queue ID", "Core job ID", "Canonical URL", "Requested scope", "Type",
                                 "Resolved scope", "MP3 quality", "Keep video", "Enqueued base", "Resolved output"))
-        values["Last diagnostic"] = diagnostic
         if entry:
             _, kind, _ = row_metadata(entry, self.app.session.index.view(entry.id), plan)
             values.update({"Reserved queue ID": entry.id, "Canonical URL": entry.url,
                            "Requested scope": entry.scope, "Enqueued base": entry.output, "Type": kind})
+            values["Remove from queue on success"] = "Yes" if entry.remove_on_success else "No"
         options = settings or entry
         if options:
             values.update({"MP3 quality": options.quality, "Keep video": "Yes" if options.keep_video else "No"})
@@ -410,6 +418,7 @@ class Details(Panel):
         if job and not entry:
             kind = f"Playlist ({len(job.items)})" if job.scope == "playlist" else "Video"
             values.update({"Type": kind, "Enqueued base": job.enqueued_base})
+        values["Last diagnostic"] = diagnostic
         return "\n".join(f"{name}  {clean_lines(value or DASH)}" for name, value in values.items())
 
     @property

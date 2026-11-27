@@ -229,13 +229,16 @@ class Dashboard(Screen):
                     yield button("＋ Add to Queue", "add-urls", "primary")
                 with Vertical(id="form-options"):
                     with Vertical(id="media-options"):
-                        with Horizontal(classes="form-line"):
-                            yield label("Scope", "field-label")
-                            yield select(SCOPE_CHOICES, "auto", "scope")
-                        with Horizontal(classes="form-line"):
-                            yield label("MP3 quality", "field-label")
-                            yield select(quality_options("0"), "0", "quality")
-                        yield Checkbox("Keep video", id="retain", compact=True)
+                        with Vertical(id="media-selects"):
+                            with Horizontal(classes="form-line"):
+                                yield label("Scope", "field-label")
+                                yield select(SCOPE_CHOICES, "auto", "scope")
+                            with Horizontal(classes="form-line"):
+                                yield label("MP3 quality", "field-label")
+                                yield select(quality_options("0"), "0", "quality")
+                        with Vertical(id="entry-toggles"):
+                            yield Checkbox("Keep video", id="retain", compact=True)
+                            yield Checkbox("Remove from queue on success", id="remove-on-success", compact=True)
                     with Horizontal(classes="form-line"):
                         yield label("Save to", "field-label")
                         yield Input(id="destination", compact=True)
@@ -266,7 +269,7 @@ class Dashboard(Screen):
         self.app.call_after_refresh(self.app.startup, self)
 
     def on_resize(self, event):
-        self.set_class(event.size.width >= 120, "-inline-destination")
+        self.set_class(event.size.width >= 140, "-inline-destination")
         self.set_class(event.size.height >= 24, "-standard-height")
         self.call_after_refresh(self.refresh_after_resize)
 
@@ -304,6 +307,7 @@ class Dashboard(Screen):
         quality.set_options(quality_options(prefs.quality))
         quality.value = prefs.quality
         self.query_one("#retain", Checkbox).value = prefs.keep_video
+        self.query_one("#remove-on-success", Checkbox).value = prefs.remove_on_success
 
     def update_controls(self, session):
         index = session.index
