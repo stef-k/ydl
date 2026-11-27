@@ -144,30 +144,25 @@ def safe_destination(path, *, remedy="Restore the folder and Recheck."):
     return info.st_dev, info.st_ino
 
 
-def inspect_local_directory(destination):
+def destination_identity(path, check_ancestors):
+    if check_ancestors:
+        return safe_destination(path)
     try:
-        info = _directory_stat(destination)
+        info = _directory_stat(path)
     except FileNotFoundError:
         return None
-    if not os.access(destination, os.R_OK | os.X_OK):
-        raise YdlError(f"Cannot access saved destination: {destination}")
     return info.st_dev, info.st_ino
-
-
-def destination_identity(path, check_ancestors):
-    return safe_destination(path) if check_ancestors else inspect_local_directory(path)
 
 
 @dataclass(frozen=True)
 class DestinationGuard:
-    identities: dict[Path, DirectoryIdentity]
-    playlist_owner: tuple[Path, str] | None = None
+    identities: dict[Path, DirectoryIdentity | None]
+    playlist_owner: tuple[Path, str, bool] | None = None
     check_ancestors: bool = True
 
     @classmethod
-    def capture(cls, base, destination, *, owner=None, check_ancestors=True):
-        identities = {path: destination_identity(path, check_ancestors) for path in (base, destination)}
-        guard = cls(identities, (destination, owner) if owner is not None else None, check_ancestors)
+    def capture(cls, path):
+        guard = cls({path: safe_destination(path)})
         guard.check()
         return guard
 
@@ -178,7 +173,8 @@ class DestinationGuard:
                     raise DestinationChanged(f"Destination changed during the download: {path}. "
                                              "Restore the original folder and Recheck.")
             if self.playlist_owner is not None:
-                check_playlist_owner(*self.playlist_owner, required=True)
+                folder, job_id, required = self.playlist_owner
+                check_playlist_owner(folder, job_id, required=required)
         except DestinationChanged:
             raise
         except (OSError, YdlError) as exc:
@@ -208,8 +204,8 @@ def check_playlist_owner(destination, job_id, *, required):
 
 
 @contextmanager
-def open_directory(path):
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def open_directory(path, *, access=os.O_RDONLY, parent_fd=None):
+    fd = os.open(path, access | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
     try:
         yield fd
     finally:
@@ -220,27 +216,55 @@ def playlist_base_changed(base):
     return DestinationChanged(f"Destination changed during planning: {base}. Restore the folder and Recheck.")
 
 
-def place_playlist_folder(staged, destination, base_fd, base_guard, *, numbered):
+def try_publish_playlist_folder(staged, candidate, base_fd):
+    try:
+        rename_without_replace(staged, candidate, parent_fd=base_fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.EOPNOTSUPP, errno.ENOSYS):
+            raise
+        return False
+    return True
+
+
+def place_playlist_folder(staged, staged_identity, destination, base_fd, base_guard, job_id, *, numbered):
     for number in count(1):
         candidate = destination if number == 1 else destination.with_name(f"{destination.name} ({number})")
         base_guard.check()
         try:
-            rename_without_replace(staged, candidate, parent_fd=base_fd)
+            if staged is not None and try_publish_playlist_folder(staged, candidate, base_fd):
+                return candidate, staged_identity
+            staged = None
+            os.mkdir(candidate.name, mode=0o700, dir_fd=base_fd)
         except FileExistsError:
             if not numbered:
                 raise
         else:
-            return candidate
+            return candidate, mark_claimed_playlist(candidate.name, base_fd, job_id)
+
+
+def mark_claimed_playlist(name, base_fd, job_id):
+    # On filesystems without no-replace rename, the fresh folder is
+    # briefly unmarked. A tracked retry refuses it until the marker is ready.
+    with open_directory(name, parent_fd=base_fd) as folder_fd:
+        fd = os.open(PLAYLIST_OWNER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     mode=0o600, dir_fd=folder_fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(job_id.encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(folder_fd)
+        info = os.fstat(folder_fd)
+        return info.st_dev, info.st_ino
 
 
 def claim_playlist_folder(destination, job_id, *, numbered=False, expected_base=None, check_ancestors=True):
-    """Publish a marked directory as one operation, relative to the validated parent."""
+    """Claim and mark a directory relative to the validated parent."""
     base = destination.parent
     base_identity = destination_identity(base, check_ancestors)
     if base_identity is None or (expected_base is not None and base_identity != expected_base):
         raise playlist_base_changed(base)
     base_guard = DestinationGuard({base: base_identity}, check_ancestors=check_ancestors)
-    with open_directory(base) as base_fd:
+    with open_directory(base, access=os.O_PATH) as base_fd:
         info = os.fstat(base_fd)
         if (info.st_dev, info.st_ino) != base_identity:
             raise playlist_base_changed(base)
@@ -257,9 +281,13 @@ def claim_playlist_folder(destination, job_id, *, numbered=False, expected_base=
                 info = os.fstat(staged_fd)
                 identity = info.st_dev, info.st_ino
                 os.fsync(staged_fd)
-            claimed = place_playlist_folder(staged, destination, base_fd, base_guard, numbered=numbered)
-            os.fsync(base_fd)
-    guard = DestinationGuard({base: base_identity, claimed: identity}, (claimed, job_id), check_ancestors)
+            claimed, identity = place_playlist_folder(staged, identity, destination, base_fd, base_guard, job_id,
+                                                      numbered=numbered)
+        # A write-and-search-only parent can admit a claim without allowing a read descriptor.
+        if os.access(".", os.R_OK, dir_fd=base_fd):
+            with open_directory(".", parent_fd=base_fd) as sync_fd:
+                os.fsync(sync_fd)
+    guard = DestinationGuard({base: base_identity, claimed: identity}, (claimed, job_id, True), check_ancestors)
     guard.check()
     return claimed, guard
 
@@ -499,11 +527,15 @@ class Inspection:
 def inspect_destination(job):
     """Validate the saved folder and return its identity when present."""
     destination = Path(job.destination)
-    if job.enqueued_base is not None:
+    queued = job.enqueued_base is not None
+    if queued:
         safe_destination(Path(job.enqueued_base))
-    identity = destination_identity(destination, job.enqueued_base is not None)
-    if identity is not None and job.scope == "playlist":
-        check_playlist_owner(destination, job.id, required=job.owns_playlist_folder)
+    identity = destination_identity(destination, queued)
+    if identity is not None:
+        if not queued and not os.access(destination, os.R_OK | os.X_OK):
+            raise YdlError(f"Cannot access saved destination: {destination}")
+        if job.scope == "playlist":
+            check_playlist_owner(destination, job.id, required=job.owns_playlist_folder)
     return identity
 
 
@@ -512,23 +544,34 @@ def resume_destination(job):
     base = destination.parent
     identity = inspect_destination(job)
     queued = job.enqueued_base is not None
-    if job.owns_playlist_folder:
-        if identity is None:
-            base.mkdir(parents=True, exist_ok=True)
+    if job.scope == "single":
+        base.mkdir(parents=True, exist_ok=True)
+        local_directory(destination)
+        return DestinationGuard.capture(destination) if queued else None
+
+    guard_base = queued or job.owns_playlist_folder
+    base_identity = destination_identity(base, queued) if guard_base else None
+    if identity is None:
+        base.mkdir(parents=True, exist_ok=True)
+        if job.owns_playlist_folder:
             try:
-                _, guard = claim_playlist_folder(destination, job.id, check_ancestors=queued)
+                _, guard = claim_playlist_folder(destination, job.id, expected_base=base_identity,
+                                                 check_ancestors=queued)
             except FileExistsError:
                 pass  # Check the folder that won the path before using it.
             else:
                 return guard
-        return DestinationGuard.capture(base, destination, owner=job.id, check_ancestors=queued)
+        else:
+            local_directory(destination)
+        identity = inspect_destination(job)
 
-    base.mkdir(parents=True, exist_ok=True)
-    local_directory(destination)
-    if job.scope == "playlist":
-        inspect_destination(job)
-    if queued:
-        return DestinationGuard.capture(Path(job.enqueued_base), destination)
+    identities = {}
+    if guard_base:
+        identities[base] = base_identity if base_identity is not None else destination_identity(base, queued)
+    identities[destination] = identity
+    guard = DestinationGuard(identities, (destination, job.id, job.owns_playlist_folder), queued)
+    guard.check()
+    return guard
 
 
 async def inspect_job(store, job_id, *, enqueued=None, before_hash=None):

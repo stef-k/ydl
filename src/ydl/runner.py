@@ -215,7 +215,7 @@ async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backe
 def create_destination(target, scope, info, job_id, *, reserved, base_identity):
     target.mkdir(parents=True, exist_ok=True)
     if scope == "single":
-        return target, jobs.DestinationGuard.capture(target, target) if reserved else None
+        return target, jobs.DestinationGuard.capture(target) if reserved else None
     title = info.get("title")
     name = jobs.safe_name(title if isinstance(title, str) else "", "Playlist")
     return jobs.claim_playlist_folder(target / name, job_id, numbered=True,
