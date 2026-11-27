@@ -1,17 +1,20 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-11-27
 
-- Save pasted URLs directly from the TUI with **Add to Queue**. Rejected lines
-  stay in the dashboard editor with their reasons. **Start queue** starts the
-  downloads. Quit asks for confirmation while an Add save is in progress.
-  If the save enters recovery during Quit, ydl warns before discarding the
-  draft. Duplicate prompts wait for the Quit decision.
-- Use playlist titles as folder names for new downloads. If a name is occupied,
-  use the next available numbered name, starting with `(2)`. Retries use the
-  original folder recorded in the saved job and stop if a different job has
-  claimed that path. Retries also stop if an unmarked folder has a pending
-  claim. New downloads stop if the folder changes before it can be marked.
+- Save pasted URLs directly from the TUI dashboard with **Add to Queue**.
+  Rejected lines stay in the editor with their reasons, and ydl asks before
+  adding duplicates. Use **Start queue** to begin downloads.
+- Quit asks for confirmation while an Add save is in progress. If the save enters
+  storage recovery during shutdown, ydl warns again before discarding the draft.
+  Choose **Stay** to keep the draft and recover the queue. Duplicate prompts
+  wait for the Quit decision.
+- Name new playlist folders after the playlist title. If the name is taken, use the next
+  available numbered folder, starting with `(2)`. Retries use the original
+  folder recorded in the saved job and stop if another job owns it or a claim
+  is incomplete. A new download stops if the folder changes during the claim.
+  Keep the hidden `.ydl-playlist-job` file with the folder.
+- Show the terminal dashboard in the README.
 
 ## 1.2.0 - 2026-11-27
 
