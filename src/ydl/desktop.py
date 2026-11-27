@@ -1,17 +1,15 @@
 """Revalidate saved downloads and dispatch them to the Linux desktop."""
 
 import asyncio
-import ctypes
 import errno
 import fcntl
 import os
 import signal
-import struct
 import subprocess
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from . import jobs
+from . import file_events, jobs
 from .models import YdlError
 
 # Linux <sys/inotify.h>. Watch the saved inodes so writes through other hard
@@ -24,8 +22,6 @@ IN_DELETE_SELF = 0x00000400
 IN_MOVE_SELF = 0x00000800
 IN_DONT_FOLLOW = 0x02000000
 MEDIA_EVENTS = IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE | IN_DELETE_SELF | IN_MOVE_SELF
-_libc = ctypes.CDLL(None, use_errno=True)
-INOTIFY_EVENT = struct.Struct("=iIII")
 
 
 @contextmanager
@@ -56,13 +52,12 @@ class MediaWatch:
         self.folder = None
 
     def add(self, path, mask):
-        wd = _libc.inotify_add_watch(self.events.fileno(), os.fsencode(path), mask)
-        if wd < 0:
-            error = ctypes.get_errno()
-            if error == errno.ENOSPC:
-                raise YdlError("Cannot monitor saved media: the Linux inotify watch limit was reached.")
-            raise OSError(error, os.strerror(error), path)
-        return wd
+        try:
+            return file_events.add_watch(self.events, path, mask)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                raise YdlError("Cannot monitor saved media: the Linux inotify watch limit was reached.") from exc
+            raise
 
     def before_hash(self, path):
         # A writable mapping keeps its underlying file open. If its last writer
@@ -83,15 +78,10 @@ class MediaWatch:
         return True
 
     def pending_events(self):
-        while data := self.events.read(4096):
-            offset = 0
-            while offset < len(data):
-                wd, mask, _, name_length = INOTIFY_EVENT.unpack_from(data, offset)
-                offset += INOTIFY_EVENT.size + name_length
-                # Directory self-events matter. Its children's own inode
-                # watches already cover saved media and exclude unrelated files.
-                if wd != self.folder or not name_length:
-                    yield wd, mask
+        for wd, mask, name in file_events.pending_events(self.events):
+            # Child inode watches cover saved media and exclude unrelated files.
+            if wd != self.folder or not name:
+                yield wd, mask
 
     def changed(self):
         with ExitStack() as leases:
@@ -111,10 +101,11 @@ class MediaWatch:
 
 @contextmanager
 def media_watch():
-    fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-    if fd < 0:
-        raise YdlError(f"Cannot monitor saved media: {os.strerror(ctypes.get_errno())}.")
-    with os.fdopen(fd, "rb", buffering=0) as events:
+    try:
+        events = file_events.open_events()
+    except OSError as exc:
+        raise YdlError(f"Cannot monitor saved media: {exc.strerror}.") from exc
+    with events:
         yield MediaWatch(events)
 
 

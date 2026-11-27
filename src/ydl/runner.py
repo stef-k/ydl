@@ -124,11 +124,6 @@ def planned_items(entries, playlist):
     return items
 
 
-def add_playlist_directory(destination, name, playlist_id):
-    text = name if isinstance(name, str) else ""
-    return destination / f"{jobs.safe_name(text, 'Playlist')} [{playlist_id}]"
-
-
 async def get_plan(address, scope, request, deps, decide, log):
     if scope == "playlist":
         return await playlist_plan(address, request, deps, decide, log)
@@ -192,6 +187,8 @@ async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backe
     if reserved:
         target = Path(destination_option)
         base_identity = jobs.safe_destination(target)
+    else:
+        base_identity = None
     scope = await scope_for(address, request, decide)
     if scope == "playlist" and media.is_mix(address.playlist):
         raise YdlError("Auto-generated YouTube mixes are unsupported. Use --single for an individual video.")
@@ -208,22 +205,21 @@ async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backe
     keep_video = await keep_video_for(request, prefs, decide)
     if reserved and jobs.safe_destination(target) != base_identity:
         raise jobs.DestinationChanged(f"Destination changed during planning: {target}. Restore the folder and Recheck.")
-    destination = create_destination(target, scope, info, address, queue=reserved)
-    guard = jobs.DestinationGuard.capture(target, destination) if reserved else None
+    destination, guard = create_destination(target, scope, info, job_id, reserved=reserved, base_identity=base_identity)
     settings = Settings(scope, quality, keep_video, destination)
     job = jobs.Job.create(job_id, settings, planned_items(entries, scope == "playlist"),
-                          enqueued_base=str(target) if reserved else None)
+                          enqueued_base=str(target) if reserved else None, owns_playlist_folder=scope == "playlist")
     return job, deps, log, guard
 
 
-def create_destination(target, scope, info, address, *, queue=False):
+def create_destination(target, scope, info, job_id, *, reserved, base_identity):
     target.mkdir(parents=True, exist_ok=True)
     if scope == "single":
-        return target
-    generated = add_playlist_directory(target, info.get("title"), address.playlist)
-    if queue:
-        jobs.safe_destination(generated)
-    return jobs.local_directory(generated)
+        return target, jobs.DestinationGuard.capture(target) if reserved else None
+    title = info.get("title")
+    name = jobs.safe_name(title if isinstance(title, str) else "", "Playlist")
+    return jobs.claim_playlist_folder(target / name, job_id, numbered=True,
+                                      expected_base=base_identity, check_ancestors=reserved)
 
 
 async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = None, backend_ready=False):
@@ -235,11 +231,7 @@ async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = Non
         if job.enqueued_base is not None:
             job = store.load(job_id, admit=True)
         log = Log(store.logs / f"{job.id}.log")
-        destination = Path(job.destination)
-        jobs.inspect_destination(job)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        jobs.local_directory(destination)
-        guard = jobs.DestinationGuard.capture(Path(job.enqueued_base), destination) if job.enqueued_base else None
+        guard = jobs.resume_destination(job)
         try:
             return await execute(job, store, paths, prefs, emit, decide, log,
                                  guard=guard, backend_ready=backend_ready)

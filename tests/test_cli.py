@@ -1,5 +1,6 @@
 """Exercise CLI workflows through the package entry point with offline media."""
 
+import asyncio
 import errno
 import fcntl
 import json
@@ -15,9 +16,13 @@ import tempfile
 import termios
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
+from ydl import config, jobs, media, runner
 from ydl.media import parse_url, playlist_size
+from ydl.models import Settings, YdlError
 
 VIDEO = "https://www.youtube.com/watch?v=testVideo01"
 MIXED = VIDEO + "&list=testPlaylist01"
@@ -48,6 +53,160 @@ class AddressTests(unittest.TestCase):
         self.assertEqual(playlist_size({"entries": [None] * 51}), (None, True))
         self.assertEqual(playlist_size({"playlist_count": 90}), (90, True))
         self.assertEqual(playlist_size({"is_incomplete": True}), (None, None))
+
+
+class PlaylistDestinationTests(unittest.IsolatedAsyncioTestCase):
+    def test_playlist_claim_without_no_replace_rename(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            occupied = base / "Test playlist"
+            occupied.mkdir()
+            (occupied / "keep").write_text("Existing file")
+            job_id = "a" * 32
+            with patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")):
+                folder, guard = runner.create_destination(base, "playlist", {"title": occupied.name}, job_id,
+                                                          reserved=False, base_identity=None)
+
+            self.assertEqual(folder, base / "Test playlist (2)")
+            self.assertEqual((folder / jobs.PLAYLIST_OWNER).read_text(), job_id)
+            self.assertEqual((occupied / "keep").read_text(), "Existing file")
+            guard.check()
+
+    def test_legacy_retry_rejects_an_incomplete_fallback_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "Test playlist [testPlaylist01]"
+            paths = config.Paths(root / "config.toml", root / "data", root / "state")
+            store = jobs.JobStore(paths.state)
+            old_id, new_id = "a" * 32, "b" * 32
+            item = jobs.make_item(1, ENTRY["id"], ENTRY["title"], True)
+            store.save(jobs.Job.create(old_id, Settings("playlist", "0", False, folder), [item]))
+            make_directory = os.mkdir
+            paused = False
+
+            def retry_in_claim_gap(name, *args, dir_fd=None, **kwargs):
+                nonlocal paused
+                make_directory(name, *args, dir_fd=dir_fd, **kwargs)
+                if name == folder.name and folder.is_dir() and not paused:
+                    paused = True
+                    retry = runner.retry(old_id, paths, config.Preferences(), emit=lambda _: None)
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        with self.assertRaisesRegex(jobs.DestinationChanged, "claim is incomplete"):
+                            pool.submit(asyncio.run, retry).result(timeout=5)
+
+            with (patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")),
+                  patch.object(os, "mkdir", side_effect=retry_in_claim_gap),
+                  patch.object(runner, "prepare", side_effect=YdlError("Unexpected backend preparation")) as prepare):
+                runner.create_destination(root, "playlist", {"title": folder.name}, new_id,
+                                          reserved=False, base_identity=None)
+
+            self.assertTrue(paused)
+            prepare.assert_not_awaited()
+            self.assertEqual({path.name: path.read_text() for path in folder.iterdir()},
+                             {jobs.PLAYLIST_OWNER: new_id})
+
+    async def test_retry_can_reclaim_the_name_after_a_marker_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "Test playlist [testPlaylist01]"
+            paths = config.Paths(root / "config.toml", root / "data", root / "state")
+            store = jobs.JobStore(paths.state)
+            old_id = "a" * 32
+            item = jobs.make_item(1, ENTRY["id"], ENTRY["title"], True)
+            store.save(jobs.Job.create(old_id, Settings("playlist", "0", False, folder), [item]))
+            open_file = os.open
+
+            def fail_marker(path, flags, mode=0o777, *, dir_fd=None):
+                if path == jobs.PLAYLIST_OWNER and flags & os.O_EXCL:
+                    raise OSError(errno.ENOSPC, "offline marker failure")
+                return open_file(path, flags, mode, dir_fd=dir_fd)
+
+            async def retry():
+                return await runner.retry(old_id, paths, config.Preferences(), emit=lambda _: None)
+
+            with patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")):
+                with patch.object(os, "open", side_effect=fail_marker), self.assertRaises(OSError) as failure:
+                    runner.create_destination(root, "playlist", {"title": folder.name}, "b" * 32,
+                                              reserved=False, base_identity=None)
+                self.assertEqual(failure.exception.errno, errno.ENOSPC)
+                self.assertEqual(list(folder.iterdir()), [])
+                with self.assertRaisesRegex(jobs.DestinationChanged, "claim is incomplete"):
+                    await retry()
+                folder.rename(root / "incomplete-claim")
+                with patch.object(runner, "prepare", side_effect=YdlError("Offline checkpoint")):
+                    with self.assertRaisesRegex(YdlError, "Offline checkpoint"):
+                        await retry()
+
+            self.assertEqual((folder / jobs.PLAYLIST_OWNER).read_text(), old_id)
+
+    async def test_fallback_does_not_mark_a_replacement_directory(self):
+        for occupied in (False, True):
+            with self.subTest(occupied=occupied), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "downloads"
+                output.mkdir()
+                folder = output / "Test playlist"
+                original = root / "original"
+                replacement = root / "replacement"
+                replacement.mkdir()
+                files = {"keep": "existing contents"} if occupied else {}
+                for name, value in files.items():
+                    (replacement / name).write_text(value)
+                paths = config.Paths(root / "config.toml", root / "data", root / "state")
+                job_id = "a" * 32
+                deps = runner.Dependencies([], "offline-ffmpeg", "offline-ffprobe")
+                metadata = {"title": folder.name, "entries": [ENTRY]}
+                make_directory = os.mkdir
+
+                def replace_new_folder(name, *args, dir_fd=None, **kwargs):
+                    make_directory(name, *args, dir_fd=dir_fd, **kwargs)
+                    if name == folder.name and folder.is_dir() and not original.exists():
+                        folder.rename(original)
+                        replacement.rename(folder)
+
+                request = runner.Download(PLAYLIST, output=str(output), yes=True)
+                with (patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")),
+                      patch.object(os, "mkdir", side_effect=replace_new_folder),
+                      patch.object(runner, "prepare", return_value=deps),
+                      patch.object(media, "metadata", return_value=metadata),
+                      patch.object(media, "transfer", side_effect=YdlError("Unexpected transfer")) as transfer):
+                    with self.assertRaisesRegex(jobs.DestinationChanged, str(folder)):
+                        await runner.download(request, paths, config.Preferences(), emit=lambda _: None, job_id=job_id)
+
+                transfer.assert_not_awaited()
+                self.assertFalse(jobs.JobStore(paths.state).path(job_id).exists())
+                self.assertTrue(original.is_dir())
+                self.assertEqual({path.name: path.read_text() for path in folder.iterdir()}, files)
+
+    async def test_legacy_retry_rejects_folder_replaced_during_backend_preparation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = config.Paths(root / "config.toml", root / "data", root / "state")
+            folder = root / "Test playlist [testPlaylist01]"
+            folder.mkdir()
+            job_id = "a" * 32
+            store = jobs.JobStore(paths.state)
+            old_track = jobs.make_item(1, ENTRY["id"], ENTRY["title"], True)
+            store.save(jobs.Job.create(job_id, Settings("playlist", "0", False, folder), [old_track]))
+            replacement_id = "b" * 32
+
+            async def replace_folder(*_args, **_kwargs):
+                folder.rename(root / "moved-legacy")
+                runner.create_destination(root, "playlist", {"title": folder.name}, replacement_id,
+                                          reserved=False, base_identity=None)
+                (folder / "001 - New track.mp3").write_bytes(b"replacement track")
+                return runner.Dependencies([], "offline-ffmpeg", "offline-ffprobe")
+
+            with (patch.object(runner, "prepare", side_effect=replace_folder),
+                  patch.object(media, "transfer", side_effect=YdlError("Unexpected transfer")) as transfer):
+                result = await runner.retry(job_id, paths, config.Preferences(), emit=lambda _: None)
+
+            transfer.assert_not_awaited()
+            self.assertTrue(result.destination_changed)
+            self.assertIn(str(folder), result.attention)
+            self.assertEqual({path.name for path in folder.iterdir()},
+                             {jobs.PLAYLIST_OWNER, "001 - New track.mp3"})
+            self.assertEqual((folder / jobs.PLAYLIST_OWNER).read_text(), replacement_id)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe required")
@@ -174,6 +333,65 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(list(self.output.rglob("*.mp3"))), 2)
         self.assertEqual(len(self.calls()), 5)
 
+    def test_playlists_with_same_title_get_separate_folders(self):
+        self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
+        first = self.output / "Test playlist" / "001 - Sample song.mp3"
+        original = first.stat()
+        occupied = self.output / "Test playlist (2)"
+        occupied.write_text("Keep this file")
+        dangling = self.output / "Test playlist (3)"
+        dangling.symlink_to(self.root / "missing")
+
+        other_playlist = PLAYLIST.replace("testPlaylist01", "testPlaylist02")
+        self.check_code(self.fetch(other_playlist, "--yes"), 0)
+
+        self.assertTrue((self.output / "Test playlist (4)" / first.name).is_file())
+        self.assertEqual(first.stat(), original)
+        self.assertEqual(occupied.read_text(), "Keep this file")
+        self.assertEqual(dangling.readlink(), self.root / "missing")
+        self.assertFalse(dangling.exists())
+
+    def test_playlist_download_and_retry_under_a_write_and_search_only_parent(self):
+        self.output.mkdir(mode=0o300)
+        self.addCleanup(self.output.chmod, 0o700)
+        if os.access(self.output, os.R_OK):
+            self.skipTest("Current user can read directories with mode 0300")
+        config.save(self.root / "config/ydl/config.toml", {"auto_update": False})
+        self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
+        folder = self.output / "Test playlist"
+        self.assertTrue((folder / "001 - Sample song.mp3").is_file())
+        folder.rename(self.root / "moved-playlist")
+        self.check_code(self.invoke("retry", self.job_id()), 0)
+        self.assertTrue((folder / "001 - Sample song.mp3").is_file())
+
+    def test_retry_refuses_a_playlist_folder_claimed_by_another_job(self):
+        preferences = self.root / "config" / "ydl" / "config.toml"
+        preferences.parent.mkdir(parents=True)
+        preferences.write_text("auto_update = false\n")
+        self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
+        job_id = self.job_id()
+        folder = self.output / "Test playlist"
+        folder.rename(self.root / "moved-original")
+        self.write_scenario(entries=[{"id": "testVideo02", "title": "New track"}])
+        self.check_code(self.fetch(PLAYLIST.replace("testPlaylist01", "testPlaylist02"), "--yes"), 0)
+        new_track = folder / "001 - New track.mp3"
+        receipt = new_track.read_bytes()
+        calls = self.calls()
+
+        retry = self.invoke("retry", job_id)
+        self.check_code(retry, 1)
+        self.assertIn("another job", retry.stderr)
+        self.assertIn(str(folder), retry.stderr)
+        self.assertEqual(self.calls(), calls)
+        self.assertEqual(list(folder.glob("*.mp3")), [new_track])
+        self.assertEqual(new_track.read_bytes(), receipt)
+
+        folder.rename(self.root / "moved-new")
+        self.check_code(self.invoke("retry", job_id), 0)
+        self.assertEqual(list(folder.glob("*.mp3")), [folder / "001 - Sample song.mp3"])
+        self.check_code(self.invoke("retry", job_id), 0)
+        self.assertEqual(len(self.calls()), len(calls) + 1)
+
     def test_retry_uses_saved_playlist_order_and_skips_completed_items(self):
         second = {"id": "testVideo02", "title": "Second"}
         third = {"id": "testVideo03", "title": "Third"}
@@ -181,17 +399,20 @@ class CliTests(unittest.TestCase):
         self.check_code(self.invoke("config", "set", "channel", "stable"), 0)
         preferences = self.root / "config" / "ydl" / "config.toml"
         preferences.write_text(preferences.read_text().replace("auto_update = true", "auto_update = false"))
+        occupied = self.output / "Test playlist"
+        occupied.mkdir(parents=True)
         blocked = self.fetch(PLAYLIST, "--yes")
         self.check_code(blocked, 1)
         self.assertIn("2 MP3 files, 1 failed", blocked.stderr)
         self.assertIn("private", blocked.stderr)
-        folder = self.output / "Test playlist [testPlaylist01]"
+        folder = self.output / "Test playlist (2)"
         first = folder / "001 - Sample song.mp3"
         old = first.stat().st_mtime_ns
         self.write_scenario(entries=[third, ENTRY])
         self.check_code(self.invoke("retry"), 0)
         self.assertEqual(first.stat().st_mtime_ns, old)
         self.assertTrue((folder / "002 - Second.mp3").is_file())
+        self.assertEqual(list(occupied.iterdir()), [])
         self.assertTrue(self.calls()[-1][-1].endswith(second["id"]))
         self.assertEqual(len(self.calls()), 5)
 
