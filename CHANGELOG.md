@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Use playlist titles as folder names for new downloads. If a name is occupied,
+  use the next available numbered name, starting with `(2)`. Retries use the
+  original folder recorded in the saved job.
+
 ## 1.2.0 - 2026-11-27
 
 - Add **Remove from queue on success** for TUI batches, with an unchecked default

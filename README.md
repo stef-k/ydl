@@ -164,8 +164,10 @@ ydl 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
 ```
 
 Playlist tracks are numbered, for example `001 - Title.mp3`, and saved in a
-separate folder. If the link points to a video within a playlist, ydl asks
-whether to download that video or the whole playlist.
+folder named after the playlist. If that name is taken, ydl tries `Playlist title (2)`,
+`Playlist title (3)`, and so on. Retrying a job uses its original folder.
+If the link points to a video within a playlist, ydl asks whether to download
+that video or the whole playlist.
 
 ### Common options
 

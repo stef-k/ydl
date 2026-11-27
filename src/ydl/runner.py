@@ -3,6 +3,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 from uuid import uuid4
 
@@ -124,11 +125,6 @@ def planned_items(entries, playlist):
     return items
 
 
-def add_playlist_directory(destination, name, playlist_id):
-    text = name if isinstance(name, str) else ""
-    return destination / f"{jobs.safe_name(text, 'Playlist')} [{playlist_id}]"
-
-
 async def get_plan(address, scope, request, deps, decide, log):
     if scope == "playlist":
         return await playlist_plan(address, request, deps, decide, log)
@@ -208,7 +204,7 @@ async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backe
     keep_video = await keep_video_for(request, prefs, decide)
     if reserved and jobs.safe_destination(target) != base_identity:
         raise jobs.DestinationChanged(f"Destination changed during planning: {target}. Restore the folder and Recheck.")
-    destination = create_destination(target, scope, info, address, queue=reserved)
+    destination = create_destination(target, scope, info)
     guard = jobs.DestinationGuard.capture(target, destination) if reserved else None
     settings = Settings(scope, quality, keep_video, destination)
     job = jobs.Job.create(job_id, settings, planned_items(entries, scope == "playlist"),
@@ -216,14 +212,20 @@ async def build_job(request, paths, prefs, job_id, reserved, emit, decide, backe
     return job, deps, log, guard
 
 
-def create_destination(target, scope, info, address, *, queue=False):
+def create_destination(target, scope, info):
     target.mkdir(parents=True, exist_ok=True)
     if scope == "single":
         return target
-    generated = add_playlist_directory(target, info.get("title"), address.playlist)
-    if queue:
-        jobs.safe_destination(generated)
-    return jobs.local_directory(generated)
+    title = info.get("title")
+    name = jobs.safe_name(title if isinstance(title, str) else "", "Playlist")
+    # Claim each candidate with mkdir so concurrent jobs cannot choose the same folder.
+    for number in count(1):
+        destination = target / (name if number == 1 else f"{name} ({number})")
+        try:
+            destination.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return jobs.local_directory(destination, create=False)
 
 
 async def retry(job_id, paths, prefs, *, emit: Emit, decide: Decide | None = None, backend_ready=False):

@@ -174,6 +174,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(list(self.output.rglob("*.mp3"))), 2)
         self.assertEqual(len(self.calls()), 5)
 
+    def test_playlists_with_same_title_get_separate_folders(self):
+        self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
+        first = self.output / "Test playlist" / "001 - Sample song.mp3"
+        original = first.stat()
+        occupied = self.output / "Test playlist (2)"
+        occupied.write_text("Keep this file")
+        dangling = self.output / "Test playlist (3)"
+        dangling.symlink_to(self.root / "missing")
+
+        other_playlist = PLAYLIST.replace("testPlaylist01", "testPlaylist02")
+        self.check_code(self.fetch(other_playlist, "--yes"), 0)
+
+        self.assertTrue((self.output / "Test playlist (4)" / first.name).is_file())
+        self.assertEqual(first.stat(), original)
+        self.assertEqual(occupied.read_text(), "Keep this file")
+        self.assertEqual(dangling.readlink(), self.root / "missing")
+        self.assertFalse(dangling.exists())
+
     def test_retry_uses_saved_playlist_order_and_skips_completed_items(self):
         second = {"id": "testVideo02", "title": "Second"}
         third = {"id": "testVideo03", "title": "Third"}
@@ -181,17 +199,20 @@ class CliTests(unittest.TestCase):
         self.check_code(self.invoke("config", "set", "channel", "stable"), 0)
         preferences = self.root / "config" / "ydl" / "config.toml"
         preferences.write_text(preferences.read_text().replace("auto_update = true", "auto_update = false"))
+        occupied = self.output / "Test playlist"
+        occupied.mkdir(parents=True)
         blocked = self.fetch(PLAYLIST, "--yes")
         self.check_code(blocked, 1)
         self.assertIn("2 MP3 files, 1 failed", blocked.stderr)
         self.assertIn("private", blocked.stderr)
-        folder = self.output / "Test playlist [testPlaylist01]"
+        folder = self.output / "Test playlist (2)"
         first = folder / "001 - Sample song.mp3"
         old = first.stat().st_mtime_ns
         self.write_scenario(entries=[third, ENTRY])
         self.check_code(self.invoke("retry"), 0)
         self.assertEqual(first.stat().st_mtime_ns, old)
         self.assertTrue((folder / "002 - Second.mp3").is_file())
+        self.assertEqual(list(occupied.iterdir()), [])
         self.assertTrue(self.calls()[-1][-1].endswith(second["id"]))
         self.assertEqual(len(self.calls()), 5)
 
