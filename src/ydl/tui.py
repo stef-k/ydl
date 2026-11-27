@@ -472,7 +472,7 @@ class YdlApp(App[int]):
     def action_quit(self):
         if self.dashboard is None or self.screen is not self.dashboard or self.session.closing:
             return
-        active = self.session.busy or self.session.backend.check is not None
+        active = self.adding or self.session.busy or self.session.backend.check is not None
         draft = self.dashboard.query_one("#draft", TextArea).text
         loss = self.session.index.error and (draft.strip() or self.recovery_draft or self.session.index.buffer)
         if active or loss:

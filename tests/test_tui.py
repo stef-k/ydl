@@ -308,19 +308,42 @@ class PilotTests(PilotCase):
                 self.assertEqual(retry.call_args.args[0], job.id)
                 self.assertEqual(app.session.index.rows, [])
 
-    async def test_failed_add_before_replacement_keeps_previous_queue(self):
+    async def test_staying_during_add_keeps_draft_and_queue_if_save_fails(self):
         existing = self.entry("A")
         self.disk.save([existing])
-        app = self.app(URL + "B")
+        draft = f"{URL}B\n{URL}C"
+        app = self.app(draft)
+        save_started, release_save = threading.Event(), threading.Event()
+
+        def reject_save(_rows):
+            save_started.set()
+            if not release_save.wait(5):
+                raise RuntimeError("Test did not release the Add save")
+            raise OSError("No space before replacing queue")
+
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
             original = self.disk.path.read_bytes()
-            with patch.object(self.disk, "save", side_effect=OSError("No space before replacing queue")):
+            with patch.object(self.disk, "save", reject_save):
                 self.assertTrue(await pilot.click("#add-urls"))
+                try:
+                    await self.wait_for(pilot, save_started.is_set)
+                    await pilot.press("ctrl+q")
+                    self.assertIsInstance(app.screen, Confirm)
+                    self.assertEqual(app.focused.id, "cancel")
+                    await pilot.press("enter")
+                    self.assertIs(app.screen, app.dashboard)
+
+                    self.assertTrue(await pilot.click("#quit"))
+                    self.assertIsInstance(app.screen, Confirm)
+                    await pilot.press("enter")
+                    self.assertIs(app.screen, app.dashboard)
+                finally:
+                    release_save.set()
                 await self.wait_for(pilot, lambda: "Save rejected" in self.screen_text(app))
             self.assertFalse(app.session.index.error)
             self.assertEqual(self.disk.path.read_bytes(), original)
-            self.assertEqual(app.screen.query_one(TextArea).text, URL + "B")
+            self.assertEqual(app.screen.query_one(TextArea).text, draft)
             self.assertTrue(app.session.index.runnable)
 
     async def test_quit_is_dashboard_only_and_preserves_pending(self):
