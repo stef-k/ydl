@@ -18,6 +18,8 @@ use `Title.mp3`. Retrying an earlier job uses the filename saved with that job.
 
 [Install](#install) · [Interactive mode](#interactive-mode) · [Command line](#command-line) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
 
+![ydl terminal dashboard with download options, the queue, and the active transfer panel](docs/ydl-tui.png)
+
 ## Install
 
 ### Linux Mint and Ubuntu
