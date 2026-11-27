@@ -11,6 +11,10 @@ class YdlError(Exception):
         self.code = code
 
 
+class DestinationChanged(YdlError):
+    pass
+
+
 @dataclass(frozen=True)
 class Settings:
     scope: str

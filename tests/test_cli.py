@@ -1,5 +1,6 @@
 """Exercise CLI workflows through the package entry point with offline media."""
 
+import asyncio
 import errno
 import fcntl
 import json
@@ -15,6 +16,7 @@ import tempfile
 import termios
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +71,112 @@ class PlaylistDestinationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((folder / jobs.PLAYLIST_OWNER).read_text(), job_id)
             self.assertEqual((occupied / "keep").read_text(), "Existing file")
             guard.check()
+
+    def test_legacy_retry_rejects_an_incomplete_fallback_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "Test playlist [testPlaylist01]"
+            paths = config.Paths(root / "config.toml", root / "data", root / "state")
+            store = jobs.JobStore(paths.state)
+            old_id, new_id = "a" * 32, "b" * 32
+            item = jobs.make_item(1, ENTRY["id"], ENTRY["title"], True)
+            store.save(jobs.Job.create(old_id, Settings("playlist", "0", False, folder), [item]))
+            make_directory = os.mkdir
+            paused = False
+
+            def retry_in_claim_gap(name, *args, dir_fd=None, **kwargs):
+                nonlocal paused
+                make_directory(name, *args, dir_fd=dir_fd, **kwargs)
+                if name == folder.name and folder.is_dir() and not paused:
+                    paused = True
+                    retry = runner.retry(old_id, paths, config.Preferences(), emit=lambda _: None)
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        with self.assertRaisesRegex(jobs.DestinationChanged, "claim is incomplete"):
+                            pool.submit(asyncio.run, retry).result(timeout=5)
+
+            with (patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")),
+                  patch.object(os, "mkdir", side_effect=retry_in_claim_gap),
+                  patch.object(runner, "prepare", side_effect=YdlError("Unexpected backend preparation")) as prepare):
+                runner.create_destination(root, "playlist", {"title": folder.name}, new_id,
+                                          reserved=False, base_identity=None)
+
+            self.assertTrue(paused)
+            prepare.assert_not_awaited()
+            self.assertEqual({path.name: path.read_text() for path in folder.iterdir()},
+                             {jobs.PLAYLIST_OWNER: new_id})
+
+    async def test_retry_can_reclaim_the_name_after_a_marker_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "Test playlist [testPlaylist01]"
+            paths = config.Paths(root / "config.toml", root / "data", root / "state")
+            store = jobs.JobStore(paths.state)
+            old_id = "a" * 32
+            item = jobs.make_item(1, ENTRY["id"], ENTRY["title"], True)
+            store.save(jobs.Job.create(old_id, Settings("playlist", "0", False, folder), [item]))
+            open_file = os.open
+
+            def fail_marker(path, flags, mode=0o777, *, dir_fd=None):
+                if path == jobs.PLAYLIST_OWNER and flags & os.O_EXCL:
+                    raise OSError(errno.ENOSPC, "offline marker failure")
+                return open_file(path, flags, mode, dir_fd=dir_fd)
+
+            async def retry():
+                return await runner.retry(old_id, paths, config.Preferences(), emit=lambda _: None)
+
+            with patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")):
+                with patch.object(os, "open", side_effect=fail_marker), self.assertRaises(OSError) as failure:
+                    runner.create_destination(root, "playlist", {"title": folder.name}, "b" * 32,
+                                              reserved=False, base_identity=None)
+                self.assertEqual(failure.exception.errno, errno.ENOSPC)
+                self.assertEqual(list(folder.iterdir()), [])
+                with self.assertRaisesRegex(jobs.DestinationChanged, "claim is incomplete"):
+                    await retry()
+                folder.rename(root / "incomplete-claim")
+                with patch.object(runner, "prepare", side_effect=YdlError("Offline checkpoint")):
+                    with self.assertRaisesRegex(YdlError, "Offline checkpoint"):
+                        await retry()
+
+            self.assertEqual((folder / jobs.PLAYLIST_OWNER).read_text(), old_id)
+
+    async def test_fallback_does_not_mark_a_replacement_directory(self):
+        for occupied in (False, True):
+            with self.subTest(occupied=occupied), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "downloads"
+                output.mkdir()
+                folder = output / "Test playlist"
+                original = root / "original"
+                replacement = root / "replacement"
+                replacement.mkdir()
+                files = {"keep": "existing contents"} if occupied else {}
+                for name, value in files.items():
+                    (replacement / name).write_text(value)
+                paths = config.Paths(root / "config.toml", root / "data", root / "state")
+                job_id = "a" * 32
+                deps = runner.Dependencies([], "offline-ffmpeg", "offline-ffprobe")
+                metadata = {"title": folder.name, "entries": [ENTRY]}
+                make_directory = os.mkdir
+
+                def replace_new_folder(name, *args, dir_fd=None, **kwargs):
+                    make_directory(name, *args, dir_fd=dir_fd, **kwargs)
+                    if name == folder.name and folder.is_dir() and not original.exists():
+                        folder.rename(original)
+                        replacement.rename(folder)
+
+                request = runner.Download(PLAYLIST, output=str(output), yes=True)
+                with (patch.object(jobs, "rename_without_replace", side_effect=OSError(errno.EINVAL, "unsupported")),
+                      patch.object(os, "mkdir", side_effect=replace_new_folder),
+                      patch.object(runner, "prepare", return_value=deps),
+                      patch.object(media, "metadata", return_value=metadata),
+                      patch.object(media, "transfer", side_effect=YdlError("Unexpected transfer")) as transfer):
+                    with self.assertRaisesRegex(jobs.DestinationChanged, str(folder)):
+                        await runner.download(request, paths, config.Preferences(), emit=lambda _: None, job_id=job_id)
+
+                transfer.assert_not_awaited()
+                self.assertFalse(jobs.JobStore(paths.state).path(job_id).exists())
+                self.assertTrue(original.is_dir())
+                self.assertEqual({path.name: path.read_text() for path in folder.iterdir()}, files)
 
     async def test_legacy_retry_rejects_folder_replaced_during_backend_preparation(self):
         with tempfile.TemporaryDirectory() as temporary:

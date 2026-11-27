@@ -21,12 +21,12 @@ from threading import Event
 
 from .config import admitted_read, atomic_write, quality_value
 from .media import ID
-from .models import Settings, YdlError
+from .models import DestinationChanged, Settings, YdlError
+from .playlist_folders import PLAYLIST_OWNER, claim_exclusive_folder, claim_pending, open_directory
 from .process import inherit_lock
 
 JOB_ID = re.compile(r"[0-9a-f]{32}")
 EXTENSION = re.compile(r"\.[a-zA-Z0-9]{1,12}")
-PLAYLIST_OWNER = ".ydl-playlist-job"
 OutputStamp = tuple[int, int, int, int, int]
 DirectoryIdentity = tuple[int, int]
 
@@ -48,10 +48,6 @@ class PlanNeedsSync(YdlError):
 
 
 class OutputConflict(YdlError):
-    pass
-
-
-class DestinationChanged(YdlError):
     pass
 
 
@@ -184,11 +180,17 @@ class DestinationGuard:
 def check_playlist_owner(destination, job_id, *, required):
     marker = destination / PLAYLIST_OWNER
     expected = job_id.encode("ascii")
+    # Read the reservation before the marker. A successful claimant drops the
+    # reservation only after its marker is ready.
+    pending = not required and claim_pending(destination)
     try:
         fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        if not required:
+        if not required and not pending:
             return
+        if pending:
+            raise DestinationChanged(f"Cannot use playlist folder {destination}: its ydl claim is incomplete. "
+                                     "Move this folder aside and retry.") from None
         reason = "its ydl job marker is missing"
     except OSError as exc:
         raise DestinationChanged(f"Cannot read playlist job marker {marker}: {exc}") from exc
@@ -201,15 +203,6 @@ def check_playlist_owner(destination, job_id, *, required):
         reason = "its ydl job marker belongs to another job or is invalid"
     raise DestinationChanged(f"Cannot use playlist folder {destination}: {reason}. "
                              "Restore the original folder, or move this folder aside and retry.")
-
-
-@contextmanager
-def open_directory(path, *, access=os.O_RDONLY, parent_fd=None):
-    fd = os.open(path, access | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
-    try:
-        yield fd
-    finally:
-        os.close(fd)
 
 
 def playlist_base_changed(base):
@@ -230,31 +223,20 @@ def place_playlist_folder(staged, staged_identity, destination, base_fd, base_gu
     for number in count(1):
         candidate = destination if number == 1 else destination.with_name(f"{destination.name} ({number})")
         base_guard.check()
-        try:
-            if staged is not None and try_publish_playlist_folder(staged, candidate, base_fd):
-                return candidate, staged_identity
+        if staged is not None:
+            try:
+                if try_publish_playlist_folder(staged, candidate, base_fd):
+                    return candidate, staged_identity
+            except FileExistsError:
+                if not numbered:
+                    raise
+                continue
             staged = None
-            os.mkdir(candidate.name, mode=0o700, dir_fd=base_fd)
-        except FileExistsError:
-            if not numbered:
-                raise
-        else:
-            return candidate, mark_claimed_playlist(candidate.name, base_fd, job_id)
-
-
-def mark_claimed_playlist(name, base_fd, job_id):
-    # On filesystems without no-replace rename, the fresh folder is
-    # briefly unmarked. A tracked retry refuses it until the marker is ready.
-    with open_directory(name, parent_fd=base_fd) as folder_fd:
-        fd = os.open(PLAYLIST_OWNER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     mode=0o600, dir_fd=folder_fd)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(job_id.encode("ascii"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.fsync(folder_fd)
-        info = os.fstat(folder_fd)
-        return info.st_dev, info.st_ino
+        identity = claim_exclusive_folder(candidate, base_fd, job_id)
+        if identity is not None:
+            return candidate, identity
+        if not numbered:
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), candidate)
 
 
 def claim_playlist_folder(destination, job_id, *, numbered=False, expected_base=None, check_ancestors=True):
@@ -553,16 +535,13 @@ def resume_destination(job):
     base_identity = destination_identity(base, queued) if guard_base else None
     if identity is None:
         base.mkdir(parents=True, exist_ok=True)
-        if job.owns_playlist_folder:
-            try:
-                _, guard = claim_playlist_folder(destination, job.id, expected_base=base_identity,
-                                                 check_ancestors=queued)
-            except FileExistsError:
-                pass  # Check the folder that won the path before using it.
-            else:
-                return guard
+        try:
+            _, guard = claim_playlist_folder(destination, job.id, expected_base=base_identity,
+                                             check_ancestors=queued)
+        except FileExistsError:
+            pass  # Check the folder that won the path before using it.
         else:
-            local_directory(destination)
+            return guard
         identity = inspect_destination(job)
 
     identities = {}

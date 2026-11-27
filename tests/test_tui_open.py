@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from textual.widgets import Button, DataTable
 
-from ydl import desktop, jobs, runner
+from ydl import desktop, file_events, jobs, runner
 from ydl.models import Settings
 from ydl.tui_dialogs import Confirm
 
@@ -92,7 +92,7 @@ class OpenTests(PilotCase):
 
         async with app.run_test(size=(80, 24)) as pilot:
             await self.show_recent_details(pilot, app)
-            with patch.object(desktop._libc, "inotify_init1", side_effect=unavailable), patch.object(
+            with patch.object(file_events.libc, "inotify_init1", side_effect=unavailable), patch.object(
                     desktop.subprocess, "Popen") as launch, patch.object(app, "notify", wraps=app.notify) as notify:
                 self.assertTrue(await pilot.click("#open-mp3"))
                 await self.wait_for(pilot, lambda: notify.called)
