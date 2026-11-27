@@ -6,7 +6,7 @@ from dataclasses import replace
 from threading import Event as ThreadEvent
 from unittest.mock import patch
 
-from textual.widgets import TabbedContent, TextArea
+from textual.widgets import Button, TabbedContent, TextArea
 
 from ydl import config, jobs, runner
 from ydl.models import Event, Result, Settings, YdlError
@@ -46,6 +46,45 @@ class FeedbackTests(PilotCase):
             self.assertIs(app.screen, app.dashboard)
             self.assertEqual(editor.text, "")
             self.assertEqual([row.url for row in self.disk.read()], [URL + "A"])
+
+    async def test_quit_warns_if_add_enters_recovery_after_confirmation(self):
+        draft = f"{URL}Added\ninvalid"
+        app = self.app(draft)
+        syncing, release_sync = ThreadEvent(), ThreadEvent()
+
+        def reject_sync(_path):
+            syncing.set()
+            if not release_sync.wait(5):
+                raise RuntimeError("Test did not release the Add directory sync")
+            raise OSError("Add directory sync failed after replacement")
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            with patch.object(config, "sync_directories", reject_sync):
+                self.assertTrue(await pilot.click("#add-urls"))
+                try:
+                    await self.wait_for(pilot, syncing.is_set)
+                    await pilot.press("ctrl+q")
+                    self.assertEqual(str(app.screen.query_one("#confirm", Button).label), "Stop and quit")
+                    self.assertTrue(await pilot.click("#confirm"))
+                    self.assertTrue(app.session.closing)
+                finally:
+                    release_sync.set()
+                await self.wait_for(pilot, lambda: app.return_value is not None or
+                                    (isinstance(app.screen, Confirm) and app.screen.ready))
+
+            self.assertIsNone(app.return_value, "Quit must warn before discarding the recovery draft")
+            self.assertIn("Unresolved draft text", self.screen_text(app))
+            self.assertEqual(str(app.focused.label), "Stay")
+            await pilot.press("enter")
+            self.assertIs(app.screen, app.dashboard)
+            editor = app.dashboard.query_one(TextArea)
+            self.assertEqual(editor.text, draft)
+            self.assertTrue(await pilot.click("#recover"))
+            await self.wait_for(pilot, lambda: not editor.read_only)
+            self.assertEqual(editor.text, "invalid")
+            self.assertEqual([row.url for row in self.disk.read()], [URL + "Added"])
+            self.assertFalse(app.session.busy)
 
     async def test_quit_cancels_receipt_verification_and_waits_for_cleanup(self):
         row = replace(self.entry("A"), status="interrupted")
@@ -132,6 +171,62 @@ class FeedbackTests(PilotCase):
                 finally:
                     resume.set()
                     await self.ready(pilot, app)
+
+    async def test_add_duplicate_waits_for_quit_answer(self):
+        for stay in (True, False):
+            with self.subTest(stay=stay):
+                await self.check_duplicate_during_quit(stay=stay)
+
+    async def check_duplicate_during_quit(self, *, stay):
+        first, pending = self.entry("First"), self.entry("Pending")
+        self.disk.save([first, pending])
+        app = self.app(pending.url)
+        saving, release_save = ThreadEvent(), ThreadEvent()
+        save = self.disk.save
+
+        def hold_active_save(rows):
+            if rows[0].status == "active":
+                saving.set()
+                if not release_save.wait(5):
+                    raise RuntimeError("Test did not release the Active save")
+            save(rows)
+
+        async def download(*_args, **_kwargs):
+            await asyncio.Future()
+
+        with (patch.object(self.disk, "save", hold_active_save), patch.object(runner, "download", download)):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.ready(pilot, app)
+                try:
+                    self.assertTrue(await pilot.click("#primary"))
+                    await self.wait_for(pilot, saving.is_set)
+                    self.assertTrue(await pilot.click("#add-urls"))
+                    self.assertTrue(await pilot.click("#quit"))
+                    quit_dialog = app.screen
+                    self.assertEqual(quit_dialog.heading, "Quit ydl")
+                finally:
+                    release_save.set()
+                try:
+                    await self.wait_for(pilot, lambda: app.session.active_id == first.id)
+                    self.assertIs(app.screen, quit_dialog)
+                    if stay:
+                        await pilot.press("enter")
+                        await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
+                        self.assertEqual(app.screen.heading, "Duplicate URL")
+                        await pilot.press("enter")
+                        await self.wait_for(pilot, lambda: "Duplicate was not added" in self.screen_text(app))
+                        self.assertEqual(app.dashboard.query_one(TextArea).text, pending.url)
+                    else:
+                        self.assertTrue(await pilot.click("#confirm"))
+                        await self.wait_for(pilot, lambda: app.return_value is not None)
+                        self.assertEqual(app.return_value, 0)
+                finally:
+                    await app.session.stop()
+                    if app.adding:
+                        while isinstance(app.screen, Confirm):
+                            await pilot.press("escape")
+                        await self.wait_for(pilot, lambda: not app.adding)
+        self.assertEqual([row.url for row in self.disk.read()], [first.url, pending.url])
 
     async def test_add_rechecks_pending_duplicates_after_confirmation(self):
         first, second = self.entry("A"), self.entry("B")

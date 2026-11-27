@@ -227,7 +227,8 @@ class YdlApp(App[int]):
     def check_action(self, action, parameters):
         if action not in MAIN_SHORTCUTS:
             return super().check_action(action, parameters)
-        if self.dashboard is None or self.screen is not self.dashboard or isinstance(self.focused, (Input, TextArea)):
+        if (self.dashboard is None or self.screen is not self.dashboard or self.session.closing
+                or isinstance(self.focused, (Input, TextArea))):
             return False
         return action != "row_menu" or isinstance(self.focused, JobTable)
 
@@ -319,6 +320,9 @@ class YdlApp(App[int]):
             if duplicate is None:
                 self.show_add_failure(batch)
                 return False
+            if self.quit_dialog is not None:
+                await self.quit_answered.wait()
+                continue  # Recheck the queue after Stay, or exit if shutdown started.
             number, entry = duplicate
             dialog = Confirm("Duplicate URL", f"{entry.url} already appears in the queue or draft. Add another entry?",
                              "Add duplicate")
@@ -500,15 +504,22 @@ class YdlApp(App[int]):
             self.action_quit()
         else:
             self.session.begin_close()
-            self.own(self.shutdown())
+            self.dashboard.disabled = True
+            self.own(self.shutdown(recovery_warned=recovery_warned))
 
-    async def shutdown(self):
+    async def shutdown(self, *, recovery_warned):
         await self.session.stop(quitting=True)
+        self.quit_answered.set()
         for wait in self.waits:
             if not wait.done():
                 wait.set_result(None)
         tasks = self.tasks - {asyncio.current_task()}
         await asyncio.gather(*tasks, return_exceptions=True)
+        if not recovery_warned and self.quit_would_discard_recovery():
+            self.session.cancel_close()
+            self.dashboard.disabled = False
+            self.action_quit()
+            return
         self.exit(0)
 
 

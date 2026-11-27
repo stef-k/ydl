@@ -5,8 +5,8 @@
 - Save pasted URLs directly from the TUI with **Add to Queue**. Rejected lines
   stay in the dashboard editor with their reasons. **Start queue** starts the
   downloads. Quit asks for confirmation while an Add save is in progress.
-  If the save enters recovery while the confirmation is open, Quit asks again
-  with a warning about discarding the draft.
+  If the save enters recovery during Quit, ydl warns before discarding the
+  draft. Duplicate prompts wait for the Quit decision.
 - Use playlist titles as folder names for new downloads. If a name is occupied,
   use the next available numbered name, starting with `(2)`. Retries use the
   original folder recorded in the saved job and stop if a different job has
