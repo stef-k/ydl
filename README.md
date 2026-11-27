@@ -104,7 +104,9 @@ Use your mouse or keyboard to manage downloads.
 2. Choose your MP3 quality, destination folder and whether to keep the video.
    Check **Remove from queue on success** to remove each entry in this batch
    after ydl verifies its saved outputs.
-3. Click **Add to Queue**, review your links and choices, and click **Add**.
+3. Click **Add to Queue** to save the links with your current choices.
+   Rejected lines stay in the URL editor with the reasons shown below the form.
+   ydl asks for confirmation before adding duplicates.
 4. Click **Start queue** to begin downloading.
 
 ydl processes the queue one entry at a time. **Active transfer** shows progress,

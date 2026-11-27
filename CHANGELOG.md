@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Save pasted URLs directly from the TUI with **Add to Queue**. Rejected lines
+  stay in the dashboard editor with their reasons. **Start queue** starts the
+  downloads.
 - Use playlist titles as folder names for new downloads. If a name is occupied,
   use the next available numbered name, starting with `(2)`. Retries use the
   original folder recorded in the saved job and stop if a different job has

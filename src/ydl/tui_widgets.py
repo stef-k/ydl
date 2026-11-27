@@ -48,6 +48,10 @@ def label(text, width=None):
     return Label(text, markup=False, classes=width)
 
 
+def form_value(field):
+    return field.text if isinstance(field, TextArea) else field.value
+
+
 class FormError(Static):
     def __init__(self, identifier):
         super().__init__("", id=identifier, markup=False)
@@ -193,6 +197,14 @@ class QueueTable(JobTable):
             self.scroll_visible(animate=False)
 
 
+class DraftEditor(TextArea):
+    def check_action(self, action, parameters):
+        # Textual's undo and redo actions bypass the read-only edit checks.
+        if self.read_only and action in ("undo", "redo"):
+            return False
+        return super().check_action(action, parameters)
+
+
 class Dashboard(Screen):
     VERTICAL_BREAKPOINTS = [(35, "-tall")]
 
@@ -202,7 +214,7 @@ class Dashboard(Screen):
         self.table_columns = ()
         self.position = 0
         self.notice_text = None
-        self.rejected_option = None
+        self.rejected_field = None
 
     def compose(self):
         brand = Text()
@@ -224,8 +236,9 @@ class Dashboard(Screen):
         with VerticalScroll(id="workspace"):
             with Vertical(id="form", classes="panel"):
                 with Horizontal(classes="form-line url-line"):
-                    yield TextArea(self.app.prefill or "", id="draft", compact=True,
-                                   placeholder="Paste YouTube URLs · one per line", soft_wrap=False, tab_behavior="focus")
+                    yield DraftEditor(self.app.prefill or "", id="draft", compact=True,
+                                      placeholder="Paste YouTube URLs · one per line",
+                                      soft_wrap=False, tab_behavior="focus")
                     yield button("＋ Add to Queue", "add-urls", "primary")
                 with Vertical(id="form-options"):
                     with Vertical(id="media-options"):
@@ -288,20 +301,21 @@ class Dashboard(Screen):
         self.app.dashboard_button(event.button.id)
 
     def set_form_error(self, message, *, field=None):
-        self.rejected_option = (field, field.value) if field is not None else None
+        self.rejected_field = (field, form_value(field)) if field is not None else None
         scroll = self.query_one("#form-error-scroll", VerticalScroll)
         scroll.query_one(FormError).set_message(message)
         scroll.display = bool(message)
         scroll.scroll_home(animate=False, immediate=True)
-        if field is not None:
-            field.focus()
+        if field is not None and self.app.screen is self:
+            self.set_focus(field)
 
     @on(Input.Changed, "#destination")
     @on(Select.Changed, "#quality")
-    def option_changed(self, event):
-        if self.rejected_option is not None:
-            field, rejected = self.rejected_option
-            if event.control is field and field.value != rejected:
+    @on(TextArea.Changed, "#draft")
+    def form_changed(self, event):
+        if self.rejected_field is not None:
+            field, rejected = self.rejected_field
+            if event.control is field and form_value(field) != rejected:
                 self.set_form_error("")
 
     def show_defaults(self, prefs):
@@ -324,7 +338,6 @@ class Dashboard(Screen):
         self.query_one("#retry-failed", Button).disabled = not (session.media_allowed and session.candidates("failed"))
         self.query_one("#clear-completed", Button).disabled = not (index.editable and not session.busy and
                                                                   any(index.view(row.id).status == "Complete" for row in index.rows))
-        self.query_one("#add-urls", Button).disabled = not index.editable or bool(session.backend.config_error)
         self.query_one("#recent", Button).disabled = not (index.admitted or index.error)
         retry = self.query_one("#retry-backend", Button)
         retry.display = bool(session.backend_retry_visible)

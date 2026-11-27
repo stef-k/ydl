@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from ydl import backend, config
 from ydl.tui import YdlApp
-from ydl.tui_dialogs import AddURLs
 from ydl.tui_queue import Entry, QueueFile
 
 
@@ -50,8 +49,3 @@ class PilotCase(unittest.IsolatedAsyncioTestCase):
 
     async def ready(self, pilot, app):
         await self.wait_for(pilot, lambda: app.session.index.runnable)
-
-    async def submit(self, pilot):
-        self.assertTrue(await pilot.click("#add-urls"))
-        self.assertIsInstance(pilot.app.screen, AddURLs)
-        self.assertTrue(await pilot.click("#submit-add"))

@@ -11,14 +11,42 @@ from textual.widgets import TabbedContent, TextArea
 from ydl import config, jobs, runner
 from ydl.models import Event, Result, Settings, YdlError
 from ydl.tui import YdlApp
-from ydl.tui_dialogs import AddURLs, Confirm, SettingsPanel
+from ydl.tui_dialogs import Confirm, SettingsPanel
 from ydl.tui_jobs import Details, RowMenu
 from ydl.tui_queue import QueueFile, missing_plan_message
 
-from tui_pilot import PilotCase
+from tui_pilot import PilotCase, URL
 
 
 class FeedbackTests(PilotCase):
+    async def test_add_shortcut_submits_only_outside_text_fields(self):
+        app = self.app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            editor = app.dashboard.query_one("#draft", TextArea)
+            queue = app.dashboard.query_one("#queue")
+            queue.focus()
+            await pilot.press("a")
+            self.assertIs(app.focused, editor)
+            self.assertIn("Enter at least one YouTube URL", self.screen_text(app))
+            await pilot.press("a")
+            self.assertEqual(editor.text, "a")
+            self.assertNotIn("Enter at least one YouTube URL", self.screen_text(app))
+
+            destination = app.dashboard.query_one("#destination")
+            destination.value = str(self.output)
+            destination.focus()
+            await pilot.press("end", "a")
+            self.assertEqual(destination.value, f"{self.output}a")
+            self.assertEqual(app.session.index.rows, [])
+            editor.load_text(URL + "A")
+            queue.focus()
+            await pilot.press("a")
+            await self.wait_for(pilot, lambda: "Added 1 URL" in self.screen_text(app))
+            self.assertIs(app.screen, app.dashboard)
+            self.assertEqual(editor.text, "")
+            self.assertEqual([row.url for row in self.disk.read()], [URL + "A"])
+
     async def test_quit_cancels_receipt_verification_and_waits_for_cleanup(self):
         row = replace(self.entry("A"), status="interrupted")
         self.disk.save([row])
@@ -94,10 +122,12 @@ class FeedbackTests(PilotCase):
             async with app.run_test(size=(80, 24)) as pilot:
                 try:
                     await self.wait_for(pilot, started.is_set)
-                    await self.submit(pilot)
-                    self.assertIsInstance(app.screen, Confirm)
+                    self.assertTrue(await pilot.click("#add-urls"))
+                    await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
                     await pilot.click("#cancel")
-                    await self.wait_for(pilot, lambda: not app.screen.saving)
+                    await self.wait_for(pilot, lambda: "Duplicate was not added" in self.screen_text(app))
+                    self.assertIs(app.screen, app.dashboard)
+                    self.assertEqual(app.screen.query_one("#draft", TextArea).text, "https://youtu.be/A?si=tracking")
                     self.assertEqual(self.disk.read(), [row])
                 finally:
                     resume.set()
@@ -117,21 +147,21 @@ class FeedbackTests(PilotCase):
                 await self.ready(pilot, app)
                 await pilot.click("#primary")
                 await self.wait_for(pilot, lambda: app.session.active_id == first.id)
-                await self.submit(pilot)
+                self.assertTrue(await pilot.click("#add-urls"))
                 await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
                 confirmation = app.screen
                 self.assertIn(second.url, confirmation.question)
                 await pilot.click("#modal-stop")
                 await self.wait_for(pilot, lambda: not app.session.busy)
-                await pilot.click("#cancel")
-                await self.wait_for(pilot, lambda: app.screen is not confirmation and app.screen.ready and
-                                    (not isinstance(app.screen, AddURLs) or not app.screen.saving))
-                self.assertIsInstance(app.screen, Confirm)
+                await pilot.click("#confirm")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm)
+                                    and app.screen is not confirmation and app.screen.ready)
                 self.assertIn(first.url, app.screen.question)
                 await pilot.click("#cancel")
-                await self.wait_for(pilot, lambda: isinstance(app.screen, AddURLs) and not app.screen.saving)
-                self.assertEqual(app.screen.query_one(TextArea).text, draft)
-                self.assertEqual([row.url for row in self.disk.read()], [first.url, second.url])
+                await self.wait_for(pilot, lambda: "Duplicate was not added" in self.screen_text(app))
+                self.assertIs(app.screen, app.dashboard)
+                self.assertEqual(app.screen.query_one("#draft", TextArea).text, first.url)
+                self.assertEqual([row.url for row in self.disk.read()], [first.url, second.url, second.url])
 
     async def test_add_confirmation_preserves_draft_when_config_becomes_invalid(self):
         row = self.entry("A")
@@ -146,24 +176,21 @@ class FeedbackTests(PilotCase):
         self.backends.side_effect = check
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
-            await self.submit(pilot)
+            self.assertTrue(await pilot.click("#add-urls"))
             await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm) and app.screen.ready)
-            confirmation = app.screen
             self.paths.config.write_text("quality = [")
             finish_check.set()
             await self.wait_for(pilot, lambda: bool(app.session.backend.config_error))
             await pilot.click("#confirm")
-            await self.wait_for(pilot, lambda: app.screen is not confirmation and
-                                (not isinstance(app.screen, AddURLs) or not app.screen.saving))
+            await self.wait_for(pilot, lambda: app.screen is app.dashboard and not app.screen.query_one("#draft").read_only)
             self.assertEqual(self.disk.read(), [row])
-            self.assertIsInstance(app.screen, AddURLs)
-            self.assertEqual(app.screen.query_one(TextArea).text, draft)
-            self.assertIs(app.focused, app.screen.query_one(TextArea))
-            self.assertTrue(app.screen.query_one("#submit-add").disabled)
+            editor = app.screen.query_one("#draft", TextArea)
+            self.assertEqual(editor.text, draft)
+            self.assertIs(app.focused, editor)
+            self.assertTrue(app.screen.query_one("#add-urls").disabled)
             await pilot.pause()
-            error = app.screen.query_one("#add-error").region
-            dialog_lines = self.rendered_lines(app)[error.y:error.bottom]
-            self.assertIn(f"Configuration error at {self.paths.config}", "\n".join(dialog_lines))
+            error = app.screen.query_one("#form-error").region
+            self.assertIn(f"Configuration error at {self.paths.config}", self.rendered_lines(app)[error.y])
 
     async def test_invalid_destination_shows_inline_error_and_keeps_draft(self):
         row = self.entry("Queued")

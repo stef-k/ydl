@@ -11,15 +11,40 @@ from textual.widgets import Button, Input, RadioSet, Select, TabbedContent, Text
 
 from ydl import config, jobs, media, runner
 from ydl.models import Decision, Event, Result, Settings, YdlError
-from ydl.tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
+from ydl.tui_dialogs import Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
 from ydl.tui_jobs import Details, RecentJobs, RowMenu
 
 from tui_pilot import PilotCase, URL
 
 
 class PilotTests(PilotCase):
+    async def test_one_click_saves_batch_and_leaves_queue_idle(self):
+        app = self.app(f"{URL}B\nhttps://youtu.be/A?t=2")
+        alias = self.root / "alias"
+        alias.symlink_to(self.output, target_is_directory=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            dashboard = app.dashboard
+            dashboard.query_one("#destination", Input).value = str(alias)
+            dashboard.query_one("#scope", Select).value = "single"
+            dashboard.query_one("#quality", Select).value = "192K"
+            dashboard.query_one("#retain").value = True
+            dashboard.query_one("#remove-on-success").value = True
+            self.assertTrue(await pilot.click("#add-urls"))
+            await self.wait_for(pilot, lambda: "Added 2 URLs" in self.screen_text(app))
+            self.assertIs(app.screen, dashboard)
+            self.assertEqual(dashboard.query_one("#draft", TextArea).text, "")
+            saved = self.disk.read()
+            self.assertEqual([row.url for row in saved], [URL + "B", URL + "A"])
+            self.assertEqual([(row.scope, row.quality, row.keep_video, row.output, row.remove_on_success)
+                              for row in saved], [("single", "192K", True, str(self.output), True)] * 2)
+            self.assertEqual([row.status for row in saved], ["pending", "pending"])
+            self.assertFalse(app.session.busy)
+            self.assertFalse(app.session.armed)
+            self.assertIn("Start queue", self.screen_text(app))
+
     async def test_prefill_batch_validation_and_restore(self):
-        draft = "https://youtu.be/A?t=2\n\nnot-a-url\nhttps://www.youtube.com/watch?v=A\nhttps://youtu.be/B"
+        draft = "https://youtu.be/A?t=2\n\nnot-a-url\nhttps://www.youtube.com/watch?v=A\nhttps://youtu.be/B\ninvalid"
         app = self.app(draft)
         async with app.run_test(size=(80, 24)) as pilot:
             await self.ready(pilot, app)
@@ -30,19 +55,25 @@ class PilotTests(PilotCase):
             self.assertEqual(app.focused.id, "add-urls")
             await pilot.press("shift+tab")
             self.assertEqual(app.focused.id, "draft")
-            await self.submit(pilot)
+            self.assertTrue(await pilot.click("#add-urls"))
             await self.wait_for(pilot, lambda: isinstance(app.screen, Confirm))
             self.assertEqual(app.focused.id, "cancel")
             await pilot.press("enter")
             await self.wait_for(pilot, lambda: len(app.session.index.rows) == 2)
-            await self.wait_for(pilot, lambda: not app.screen.saving)
-            self.assertEqual(app.screen.query_one(TextArea).text.splitlines(), ["not-a-url", URL + "A"])
-            await pilot.pause()
+            await self.wait_for(pilot, lambda: "Line 2 · Duplicate was not added" in self.screen_text(app))
+            self.assertIs(app.screen, app.dashboard)
+            editor = app.screen.query_one("#draft", TextArea)
+            self.assertEqual(editor.text.splitlines(), ["not-a-url", URL + "A", "invalid"])
             rendered = self.screen_text(app)
+            self.assertIn("not-a-url", rendered)
+            self.assertIn(URL + "A", rendered)
             self.assertIn("Line 1 · Enter a YouTube watch", rendered)
             self.assertIn("Line 2 · Duplicate was not added", rendered)
-            await pilot.press("escape")
-            self.assertEqual(app.screen.query_one("#draft", TextArea).text.splitlines(), ["not-a-url", URL + "A"])
+            errors = app.screen.query_one("#form-error-scroll")
+            await pilot._post_mouse_events([MouseScrollDown], errors, offset=(2, 0))
+            await self.wait_for(pilot, lambda: "Line 3 · Enter a YouTube watch" in self.screen_text(app))
+            await pilot._post_mouse_events([MouseScrollDown], editor, offset=(2, 0))
+            await self.wait_for(pilot, lambda: "invalid" in self.screen_text(app))
         saved = self.disk.read()
         self.assertEqual([row.url for row in saved], [URL + "A", URL + "B"])
         reopened = self.app()
@@ -211,7 +242,8 @@ class PilotTests(PilotCase):
             self.backends.assert_not_called()
 
     async def test_add_save_uncertainty_keeps_draft_and_recovery_stays_idle(self):
-        app = self.app(URL + "A\ninvalid")
+        draft = f"{URL}A\n\ninvalid\n{URL}b"
+        app = self.app(draft[:-1])
         real_sync = config.sync_directories
         healthy = False
 
@@ -223,16 +255,28 @@ class PilotTests(PilotCase):
         with patch.object(config, "sync_directories", side_effect=sync):
             async with app.run_test(size=(80, 24)) as pilot:
                 await self.ready(pilot, app)
-                await self.submit(pilot)
-                await self.wait_for(pilot, lambda: bool(app.session.index.error) and not app.screen.saving)
+                editor = app.dashboard.query_one("#draft", TextArea)
+                editor.move_cursor(editor.document.end)
+                await pilot.press("b")
+                self.assertTrue(await pilot.click("#add-urls"))
+                await self.wait_for(pilot, lambda: "durability uncertain" in self.screen_text(app))
+                self.assertIs(app.screen, app.dashboard)
                 self.assertIn("durability uncertain", app.session.index.error)
-                self.assertEqual(app.screen.query_one(TextArea).text, URL + "A\ninvalid")
+                self.assertEqual(editor.text, draft)
+                self.assertTrue(editor.read_only)
                 self.assertFalse(app.session.media_allowed)
+                editor.focus()
+                await pilot.press("ctrl+z")
+                self.assertEqual(editor.text, draft)
                 healthy = True
-                self.assertTrue(await pilot.click("#add-recover"))
-                await self.wait_for(pilot, lambda: app.session.index.editable and app.recovery_draft is None)
-                self.assertEqual(app.screen.query_one(TextArea).text, "invalid")
-                self.assertEqual([row.url for row in self.disk.read()], [URL + "A"])
+                first, _ = self.disk.read()
+                other = self.entry("b")
+                self.disk.save([first, other])
+                self.assertTrue(await pilot.click("#recover"))
+                await self.wait_for(pilot, lambda: not editor.read_only)
+                self.assertEqual(editor.text, f"\ninvalid\n{URL}b")
+                self.assertIn("Line 2 · Enter a YouTube watch", self.screen_text(app))
+                self.assertEqual(self.disk.read(), [first, other])
                 self.assertFalse(app.session.busy)
 
     async def test_log_is_bounded_and_recent_external_retry_uses_worker(self):
@@ -272,8 +316,8 @@ class PilotTests(PilotCase):
             await self.ready(pilot, app)
             original = self.disk.path.read_bytes()
             with patch.object(self.disk, "save", side_effect=OSError("No space before replacing queue")):
-                await self.submit(pilot)
-                await self.wait_for(pilot, lambda: "Save rejected" in app.session.index.notice)
+                self.assertTrue(await pilot.click("#add-urls"))
+                await self.wait_for(pilot, lambda: "Save rejected" in self.screen_text(app))
             self.assertFalse(app.session.index.error)
             self.assertEqual(self.disk.path.read_bytes(), original)
             self.assertEqual(app.screen.query_one(TextArea).text, URL + "B")
@@ -332,7 +376,7 @@ class PilotTests(PilotCase):
     async def check_successful_add_under_prompt(self, rejected):
         original = self.entry("A")
         self.disk.save([original])
-        draft = "\n".join(filter(None, (URL + "New", rejected)))
+        draft = "\n".join(filter(None, (URL + "New", URL + "Next", rejected)))
         app = self.app(draft)
         before_prompt, pending_add = asyncio.Event(), asyncio.Event()
         finish_add = threading.Event()
@@ -341,7 +385,7 @@ class PilotTests(PilotCase):
         answers = []
 
         def hold_sync(path):
-            if path == self.paths.state and not finish_add.is_set() and self.disk.path.read_bytes().count(b'"id"') == 2:
+            if path == self.paths.state and not finish_add.is_set() and self.disk.path.read_bytes().count(b'"id"') == 3:
                 loop.call_soon_threadsafe(pending_add.set)
                 if not finish_add.wait(5):
                     raise RuntimeError("Test did not release the Add save")
@@ -355,15 +399,20 @@ class PilotTests(PilotCase):
                 return Result(declined=True)
             return Result(saved=1)
 
-        with patch.object(runner, "download", side_effect=download), patch.object(config, "sync_directories", hold_sync):
+        with (patch.object(runner, "download", side_effect=download) as operation,
+              patch.object(config, "sync_directories", hold_sync)):
             async with app.run_test(size=(80, 24)) as pilot:
                 await self.ready(pilot, app)
                 await pilot.click("#primary")
                 await self.wait_for(pilot, lambda: app.session.active_id == original.id)
-                await self.submit(pilot)
-                add = app.screen
+                self.assertTrue(await pilot.click("#add-urls"))
+                editor = app.dashboard.query_one("#draft", TextArea)
                 try:
                     await self.wait_for(pilot, pending_add.is_set)
+                    self.assertTrue(editor.read_only)
+                    self.assertTrue(app.dashboard.query_one("#add-urls").disabled)
+                    app.dashboard.query_one("#queue").focus()
+                    await pilot.press("a")
                     before_prompt.set()
                     await self.wait_for(pilot, lambda: isinstance(app.screen, RunnerPrompt)
                                         and getattr(app.screen, "ready", False))
@@ -371,23 +420,20 @@ class PilotTests(PilotCase):
                 finally:
                     finish_add.set()
                 try:
-                    await self.wait_for(pilot, lambda: not add.saving)
+                    await self.wait_for(pilot, lambda: not editor.read_only)
                     self.assertIs(app.screen, prompt)
                     self.assertEqual(app.focused.id, "choice-1")
+                    self.assertEqual(editor.text, rejected)
                     self.assertTrue(await pilot.click("#choice-1"))
                     await self.wait_for(pilot, lambda: not app.session.busy)
                     self.assertEqual(answers, ["n"])
-                    self.assertEqual([row.url for row in self.disk.read()], [original.url, URL + "New"])
-                    if rejected:
-                        self.assertIs(app.screen, add)
-                        self.assertEqual(app.focused.id, "batch-draft")
-                        self.assertEqual(app.focused.text, rejected)
-                        await pilot.pause()
-                        self.assertIn("Line 1 · Enter a YouTube watch", self.screen_text(app))
-                        await pilot.press("escape")
+                    saved = self.disk.read()
+                    self.assertEqual([row.url for row in saved], [original.url, URL + "New", URL + "Next"])
+                    self.assertEqual([call.kwargs["job_id"] for call in operation.await_args_list],
+                                     [row.id for row in saved])
                     self.assertIs(app.screen, app.dashboard)
-                    self.assertEqual(app.dashboard.query_one("#draft", TextArea).text, rejected)
-                    self.assertEqual(app.focused.id, "add-urls")
+                    if rejected:
+                        self.assertIn("Line 1 · Enter a YouTube watch", self.screen_text(app))
                 finally:
                     await app.session.stop()
 
@@ -427,7 +473,7 @@ class PilotTests(PilotCase):
                 with patch.object(config, "sync_directories", side_effect=interrupt_sync):
                     await pilot.click("#primary")
                     await self.wait_for(pilot, lambda: app.session.active_id == original_row.id)
-                    await self.submit(pilot)
+                    self.assertTrue(await pilot.click("#add-urls"))
                     try:
                         await self.wait_for(pilot, pending_add.is_set)
                         before_prompt.set()
@@ -442,8 +488,12 @@ class PilotTests(PilotCase):
                     self.assertEqual(buffered.status, expected)
                     if answer == "n":
                         self.assertEqual(buffered.diagnostic, "Playlist download declined")
-                    self.assertTrue(await pilot.click("#add-recover"))
-                    await self.wait_for(pilot, lambda: app.session.index.editable and app.recovery_draft is None)
+                    self.assertIs(app.screen, app.dashboard)
+                    editor = app.dashboard.query_one("#draft", TextArea)
+                    self.assertEqual(editor.text, URL + "New")
+                    self.assertTrue(await pilot.click("#recover"))
+                    await self.wait_for(pilot, lambda: not editor.read_only)
+                    self.assertEqual(editor.text, "")
                     self.assertEqual([row.status for row in self.disk.read()], [expected, "pending", "pending"])
                     self.assertFalse(app.session.busy)
 

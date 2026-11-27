@@ -185,9 +185,8 @@ class RemovalOptionsTests(PilotCase):
             await pilot.press("space")
             self.assertTrue(remove.value)
             self.assertTrue(await pilot.click("#add-urls"))
-            self.assertIn("Remove from queue on success · Yes", self.screen_text(app))
-            self.assertTrue(await pilot.click("#submit-add"))
-            await self.wait_for(pilot, lambda: app.screen is app.dashboard)
+            await self.wait_for(pilot, lambda: "Added 2 URLs" in self.screen_text(app))
+            self.assertIs(app.screen, app.dashboard)
             self.assertEqual([row.remove_on_success for row in self.disk.read()], [False, True, True])
 
             self.assertTrue(await pilot.click("#settings"))
