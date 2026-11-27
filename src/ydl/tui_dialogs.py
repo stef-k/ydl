@@ -8,12 +8,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, Checkbox, DirectoryTree, Input, Label, RadioButton, RadioSet, Select,
-                             Static, TabbedContent, TabPane, Tabs, TextArea)
+                             Static, TabbedContent, TabPane, Tabs)
 
 from . import config
 from .models import YdlError
 from .terminal import clean, clean_lines
-from .tui_queue import Entry
 from .tui_widgets import FormError, button, format_backend, quality_options, select
 
 
@@ -140,163 +139,6 @@ class RunnerPrompt(Panel):
         identifier = event.button.id or ""
         if identifier.startswith("choice-"):
             self.dismiss(self.decision.choices[int(identifier.removeprefix("choice-"))][0])
-
-
-class AddURLs(Panel):
-    heading = "Add URLs"
-    initial_focus = "#batch-draft"
-
-    def __init__(self, draft, options, *, remove_on_success):
-        super().__init__()
-        self.original, self.options = draft, options
-        self.remove_on_success = remove_on_success
-        self.saving = False
-        self.recovery_draft = None
-
-    def body(self):
-        scope, quality, keep_video, output = self.options
-        yield Static(f"{scope.capitalize()} · MP3 {quality} · Keep video {'on' if keep_video else 'off'}\n"
-                     f"Remove from queue on success · {'Yes' if self.remove_on_success else 'No'}\n"
-                     f"Save to {clean(output)}", markup=False)
-        yield TextArea(self.original, id="batch-draft", placeholder="Paste YouTube URLs · one per line",
-                       compact=True, soft_wrap=False, tab_behavior="focus")
-        yield FormError("add-error")
-        yield FormError("add-storage")
-
-    def buttons(self):
-        yield button("Cancel", "cancel")
-        yield button("Add", "submit-add", "primary")
-        yield button("Recover queue", "add-recover", "warning")
-
-    def sync(self):
-        super().sync()
-        session = self.app.session
-        error = session.index.error
-        self.query_one("#add-storage", FormError).set_message(clean_lines(error))
-        recover = self.query_one("#add-recover", Button)
-        recover.display = bool(error)
-        recover.disabled = not session.can_recover
-        self.query_one("#submit-add", Button).disabled = self.saving or not session.index.editable or bool(session.backend.config_error)
-        self.query_one(TextArea).read_only = self.saving or self.recovery_draft is not None
-
-    def action_cancel(self):
-        if not self.saving:
-            self.app.close_when_current(self, self.query_one(TextArea).text)
-
-    @on(Button.Pressed, "#submit-add")
-    def submit(self):
-        if not self.saving:
-            self.set_focus(self.query_one(TextArea))
-            self.app.own(self.save_draft())
-
-    @on(Button.Pressed, "#add-recover")
-    def recover(self):
-        self.app.own(self.app.recover_queue())
-
-    def show_error(self, message):
-        self.query_one("#add-error", FormError).set_message(message)
-        self.query_one(TextArea).focus()
-
-    def parse_draft(self, lines):
-        accepted, rejected = [], []
-        for line_number, raw in enumerate(lines, 1):
-            if not raw.strip():
-                continue
-            try:
-                entry = Entry.from_url(raw.strip(), *self.options, remove_on_success=self.remove_on_success)
-            except YdlError as exc:
-                rejected.append((line_number, raw, str(exc)))
-                continue
-            accepted.append((line_number, entry))
-        return accepted, rejected
-
-    def unconfirmed_duplicate(self, rows, accepted, confirmed):
-        index = self.app.session.index
-        seen = set()
-        for row in rows:
-            status = index.view(row.id).status
-            if status == "Pending" or (status == "Verifying" and row.status == "pending"):
-                seen.add(row.url)
-        for line_number, entry in accepted:
-            if entry.url in seen and line_number not in confirmed:
-                return line_number, entry
-            seen.add(entry.url)
-        return None
-
-    async def save_draft(self):
-        editor = self.query_one(TextArea)
-        text = editor.text
-        if not text.strip():
-            self.show_error("Enter at least one YouTube URL")
-            return
-        self.saving = True
-        self.sync()
-        try:
-            lines = text.splitlines()
-            accepted, rejected = self.parse_draft(lines)
-            if not await self.commit(text, lines, accepted, rejected):
-                return
-            if not rejected:
-                editor.load_text("")
-                self.app.close_when_current(self, "")
-                return
-            rejected.sort()
-            editor.load_text("\n".join(raw for _, raw, _ in rejected))
-            messages = (f"Line {number} · {reason}" for number, (_, _, reason) in enumerate(rejected, 1))
-            self.show_error("\n".join(messages))
-        finally:
-            self.saving = False
-            self.sync()
-
-    async def commit(self, text, lines, accepted, rejected):
-        session = self.app.session
-        index = session.index
-        confirmed = set()
-        while accepted and not session.closing:
-            duplicate = None
-
-            def append(rows):
-                nonlocal duplicate
-                if session.closing or session.backend.config_error:
-                    return None
-                duplicate = self.unconfirmed_duplicate(rows, accepted, confirmed)
-                return [*rows, *(entry for _, entry in accepted)] if duplicate is None else None
-
-            if await index.edit(append):
-                index.notice = f"Added {len(accepted)} URL{'s' if len(accepted) != 1 else ''}."
-                return True
-            if duplicate is None:
-                if not session.closing:
-                    self.show_save_error(text, accepted)
-                return False
-            line_number, entry = duplicate
-            dialog = Confirm("Duplicate URL", f"{entry.url} already appears in the queue or draft. Add another entry?",
-                             "Add duplicate")
-            if await self.app.ask(dialog):
-                confirmed.add(line_number)
-            else:
-                accepted.remove(duplicate)
-                rejected.append((line_number, lines[line_number - 1], "Duplicate was not added."))
-        return not session.closing
-
-    def show_save_error(self, text, accepted):
-        session = self.app.session
-        index = session.index
-        if index.error:
-            self.recovery_draft = text, accepted
-            self.app.recovery_draft = self.recovery_draft
-            self.app.refresh_views()
-            self.show_error("")
-            return
-        message = session.backend.config_error or index.notice
-        self.show_error(clean_lines(message or "The queue cannot accept changes right now."))
-
-    def recovered(self, draft):
-        self.recovery_draft = None
-        editor = self.query_one(TextArea)
-        editor.load_text(draft)
-        self.show_error("")
-        self.sync()
 
 
 class Folders(DirectoryTree):
@@ -476,7 +318,7 @@ class HelpPanel(Panel):
                      "Arrow keys        Navigate the focused control\n"
                      "Enter             Activate a choice, open Details, or insert a URL line\n"
                      "Escape            Cancel or close the current view\n"
-                     "A                 Add URLs\n"
+                     "a                 Add to Queue (outside text fields)\n"
                      "R / Shift+R       Retry selected entry / Retry failed\n"
                      "D                 Job Details\n"
                      "S                 Settings\n"

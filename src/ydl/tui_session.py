@@ -64,6 +64,10 @@ class QueueSession:
         self.quit_requested.set()
         self.armed = False
 
+    def cancel_close(self):
+        """Return to the idle dashboard once shutdown work has settled."""
+        self.quit_requested.clear()
+
     @property
     def media_allowed(self):
         return self.index.runnable and not (self.busy or self.closing or self.backend.repair_at_launch)

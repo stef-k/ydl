@@ -6,21 +6,51 @@ from textual import events, on
 from textual.app import App
 from textual.binding import Binding
 from textual.errors import NoWidget
-from textual.widgets import DataTable, Input, Select, TextArea
+from textual.widgets import Button, Checkbox, DataTable, Input, Select, TextArea
 
 from . import config
 from .models import YdlError
 from .runner import DecisionDismissed
 from .terminal import clean, clean_lines
 from .tui_backend import output_directory
-from .tui_dialogs import AddURLs, Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
+from .tui_dialogs import Browse, Confirm, HelpPanel, RunnerPrompt, SettingsPanel
 from .tui_jobs import Details, RecentJobs, RowMenu
-from .tui_queue import QueueFile
+from .tui_queue import Entry, QueueFile
 from .tui_session import QueueSession
 from .tui_widgets import Dashboard, JobTable, move_target
 
 MAIN_SHORTCUTS = {"add", "retry_selected", "retry_failed", "details", "settings",
                   "row_menu", "remove", "clear_complete", "help"}
+
+
+class DraftBatch:
+    """Keep the submitted lines and their reserved queue entries through recovery."""
+
+    def __init__(self, lines, options, *, remove_on_success):
+        self.lines = tuple(lines)
+        self.accepted = []
+        self.rejected = {}
+        for number, raw in enumerate(self.lines):
+            if not raw.strip():
+                continue
+            try:
+                entry = Entry.from_url(raw.strip(), *options, remove_on_success=remove_on_success)
+            except YdlError as exc:
+                self.rejected[number] = clean(exc)
+            else:
+                self.accepted.append((number, entry))
+
+    def unconfirmed_duplicate(self, index, rows, confirmed):
+        seen = set()
+        for row in rows:
+            status = index.view(row.id).status
+            if status == "Pending" or (status == "Verifying" and row.status == "pending"):
+                seen.add(row.url)
+        for number, entry in self.accepted:
+            if entry.url in seen and number not in confirmed:
+                return number, entry
+            seen.add(entry.url)
+        return None
 
 
 class YdlApp(App[int]):
@@ -48,6 +78,7 @@ class YdlApp(App[int]):
         self.owned_prompt = None
         self.quit_dialog = None
         self.quit_answered = asyncio.Event()
+        self.adding = False
         self.recovery_draft = None
         self.deferred_close = {}
         self.last_stage = None
@@ -125,7 +156,17 @@ class YdlApp(App[int]):
         self.dashboard.update_controls(self.session)
         self.dashboard.update_status(self.session)
         self.dashboard.draw_table(self.session, self.selected)
-        self.dashboard.query_one("#draft", TextArea).read_only = self.recovery_draft is not None
+        self.refresh_draft_controls()
+
+    @property
+    def can_add(self):
+        session = self.session
+        return (not (self.adding or self.recovery_draft or session.closing)
+                and session.index.editable and not session.backend.config_error)
+
+    def refresh_draft_controls(self):
+        self.dashboard.query_one("#add-urls", Button).disabled = not self.can_add
+        self.dashboard.query_one("#draft", TextArea).read_only = self.adding or self.recovery_draft is not None
 
     def show(self, screen, callback=None, *, opener=None):
         origin = self.screen
@@ -186,7 +227,8 @@ class YdlApp(App[int]):
     def check_action(self, action, parameters):
         if action not in MAIN_SHORTCUTS:
             return super().check_action(action, parameters)
-        if self.dashboard is None or self.screen is not self.dashboard or isinstance(self.focused, (Input, TextArea)):
+        if (self.dashboard is None or self.screen is not self.dashboard or self.session.closing
+                or isinstance(self.focused, (Input, TextArea))):
             return False
         return action != "row_menu" or isinstance(self.focused, JobTable)
 
@@ -221,12 +263,14 @@ class YdlApp(App[int]):
             self.details(event.row_id)
 
     def action_add(self):
-        index = self.session.index
-        if not index.editable or self.session.backend.config_error:
+        if not self.can_add:
             return
-        index.dismiss_restore_notice()
+        self.session.index.dismiss_restore_notice()
         self.dashboard.update_notice(self.session)
         draft = self.dashboard.query_one("#draft", TextArea)
+        if not draft.text.strip():
+            self.dashboard.set_form_error("Enter at least one YouTube URL", field=draft)
+            return
         field = self.dashboard.query_one("#destination", Input)
         try:
             output = output_directory(field.value)
@@ -241,10 +285,69 @@ class YdlApp(App[int]):
             return
         self.dashboard.set_form_error("")
         scope = self.dashboard.query_one("#scope", Select).value
-        retain = self.dashboard.query_one("#retain").value
-        remove = self.dashboard.query_one("#remove-on-success").value
-        self.show(AddURLs(draft.text, (scope, selected_quality, retain, output), remove_on_success=remove),
-                  lambda text: draft.load_text(text) if text is not None else None)
+        retain = self.dashboard.query_one("#retain", Checkbox).value
+        remove = self.dashboard.query_one("#remove-on-success", Checkbox).value
+        batch = DraftBatch(draft.document.lines, (scope, selected_quality, retain, output), remove_on_success=remove)
+        self.adding = True
+        self.refresh_draft_controls()
+        self.own(self.save_draft(batch))
+
+    async def save_draft(self, batch):
+        try:
+            if await self.commit_add(batch):
+                self.update_draft(batch, sorted(batch.rejected))
+        finally:
+            self.adding = False
+            self.refresh_views()
+
+    async def commit_add(self, batch):
+        session, index = self.session, self.session.index
+        confirmed = set()
+        while batch.accepted and not session.closing:
+            duplicate = None
+
+            def append(rows):
+                nonlocal duplicate
+                if session.closing or session.backend.config_error:
+                    return None
+                duplicate = batch.unconfirmed_duplicate(index, rows, confirmed)
+                return [*rows, *(entry for _, entry in batch.accepted)] if duplicate is None else None
+
+            if await index.edit(append):
+                count = len(batch.accepted)
+                index.notice = f"Added {count} URL{'s' if count != 1 else ''}."
+                return True
+            if duplicate is None:
+                self.show_add_failure(batch)
+                return False
+            if self.quit_dialog is not None:
+                await self.quit_answered.wait()
+                continue  # Recheck the queue after Stay, or exit if shutdown started.
+            number, entry = duplicate
+            dialog = Confirm("Duplicate URL", f"{entry.url} already appears in the queue or draft. Add another entry?",
+                             "Add duplicate")
+            if await self.ask(dialog):
+                confirmed.add(number)
+            else:
+                batch.accepted.remove(duplicate)
+                batch.rejected[number] = "Duplicate was not added."
+        return not session.closing
+
+    def show_add_failure(self, batch):
+        session, index = self.session, self.session.index
+        if index.error:
+            self.recovery_draft = batch
+        elif not session.closing:
+            editor = self.dashboard.query_one("#draft", TextArea)
+            message = session.backend.config_error or index.notice or "The queue cannot accept changes right now."
+            self.dashboard.set_form_error(clean_lines(message), field=editor)
+
+    def update_draft(self, batch, remaining):
+        editor = self.dashboard.query_one("#draft", TextArea)
+        editor.load_text(editor.document.newline.join(batch.lines[number] for number in remaining))
+        errors = [f"Line {position} · {batch.rejected[number]}" for position, number in enumerate(remaining, 1)
+                  if number in batch.rejected]
+        self.dashboard.set_form_error("\n".join(errors), field=editor if errors else None)
 
     def primary(self):
         if self.session.busy:
@@ -358,18 +461,12 @@ class YdlApp(App[int]):
     async def recover_queue(self):
         if not await self.session.recover() or self.recovery_draft is None:
             return
-        original, accepted = self.recovery_draft
-        admitted = {number for number, entry in accepted if self.session.index.row(entry.id) is not None}
-        draft = "\n".join(raw for number, raw in enumerate(original.splitlines(), 1) if number not in admitted)
+        batch = self.recovery_draft
+        saved_ids = {row.id for row in self.session.index.rows}
+        admitted = {number for number, entry in batch.accepted if entry.id in saved_ids}
+        self.update_draft(batch, [number for number in range(len(batch.lines)) if number not in admitted])
         self.recovery_draft = None
         self.refresh_views()
-        for screen in self.screen_stack:
-            if isinstance(screen, AddURLs) and screen.recovery_draft is not None:
-                screen.recovered(draft)
-                return
-        editor = self.dashboard.query_one("#draft", TextArea)
-        if editor.text == original:
-            editor.load_text(draft)
 
     def action_stop(self):
         if self.session.busy and not self.session.stopping:
@@ -379,34 +476,50 @@ class YdlApp(App[int]):
     def action_quit(self):
         if self.dashboard is None or self.screen is not self.dashboard or self.session.closing:
             return
-        active = self.session.busy or self.session.backend.check is not None
-        draft = self.dashboard.query_one("#draft", TextArea).text
-        loss = self.session.index.error and (draft.strip() or self.recovery_draft or self.session.index.buffer)
+        if self.quit_dialog is not None:
+            return
+        active = self.adding or self.session.busy or self.session.backend.check is not None
+        loss = self.quit_would_discard_recovery()
         if active or loss:
             question = "Stop the current operation and quit?" if active else "Quit ydl?"
             if loss:
                 question += " Unresolved draft text or buffered outcomes will be discarded."
             self.quit_answered.clear()
             self.quit_dialog = Confirm("Quit ydl", question, "Stop and quit" if active else "Quit", "Stay", quits=True)
-            self.show(self.quit_dialog, self.answer_quit)
+            self.show(self.quit_dialog, lambda answer: self.answer_quit(answer, recovery_warned=loss))
         else:
             self.answer_quit(True)
 
-    def answer_quit(self, answer):
-        self.quit_dialog = None
-        if answer:
-            self.session.begin_close()
-            self.own(self.shutdown())
-        else:
-            self.quit_answered.set()
+    def quit_would_discard_recovery(self):
+        if not self.session.index.error:
+            return False
+        draft = self.dashboard.query_one("#draft", TextArea).text
+        return bool(draft.strip() or self.recovery_draft or self.session.index.buffer)
 
-    async def shutdown(self):
+    def answer_quit(self, answer, *, recovery_warned=False):
+        self.quit_dialog = None
+        if not answer:
+            self.quit_answered.set()
+        elif not recovery_warned and self.quit_would_discard_recovery():
+            self.action_quit()
+        else:
+            self.session.begin_close()
+            self.dashboard.disabled = True
+            self.own(self.shutdown(recovery_warned=recovery_warned))
+
+    async def shutdown(self, *, recovery_warned):
         await self.session.stop(quitting=True)
+        self.quit_answered.set()
         for wait in self.waits:
             if not wait.done():
                 wait.set_result(None)
         tasks = self.tasks - {asyncio.current_task()}
         await asyncio.gather(*tasks, return_exceptions=True)
+        if not recovery_warned and self.quit_would_discard_recovery():
+            self.session.cancel_close()
+            self.dashboard.disabled = False
+            self.action_quit()
+            return
         self.exit(0)
 
 

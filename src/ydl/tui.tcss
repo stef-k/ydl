@@ -97,7 +97,6 @@ RunnerPrompt .dialog { width: 58; }
 .dialog-controls { margin-bottom: 1; }
 .dialog-global { background: #1c365d; }
 .dialog-controls Button, .dialog-global Button { margin-right: 0; margin-left: 1; }
-#batch-draft { height: 5; margin: 1 0; }
 #scope-ids { color: $ydl-muted; margin-bottom: 1; }
 #scope-question { text-style: bold; }
 #choices { height: auto; margin-top: 1; background: transparent; }
