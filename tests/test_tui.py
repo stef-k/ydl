@@ -346,6 +346,48 @@ class PilotTests(PilotCase):
             self.assertEqual(app.screen.query_one(TextArea).text, draft)
             self.assertTrue(app.session.index.runnable)
 
+    async def test_quit_requires_recovery_warning_when_add_save_becomes_uncertain(self):
+        draft = f"{URL}B\n{URL}C\ninvalid"
+        app = self.app(draft)
+        sync_started, release_sync = threading.Event(), threading.Event()
+
+        def reject_sync(_path):
+            sync_started.set()
+            if not release_sync.wait(5):
+                raise RuntimeError("Test did not release the Add directory sync")
+            raise OSError("Add directory sync failed after replacement")
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.ready(pilot, app)
+            with patch.object(config, "sync_directories", reject_sync):
+                self.assertTrue(await pilot.click("#add-urls"))
+                try:
+                    await self.wait_for(pilot, sync_started.is_set)
+                    self.assertTrue(await pilot.click("#quit"))
+                    self.assertEqual(str(app.screen.query_one("#confirm", Button).label), "Stop and quit")
+                finally:
+                    release_sync.set()
+                await self.wait_for(pilot, lambda: not app.adding)
+
+            self.assertIn("Save durability uncertain", app.session.index.error)
+            self.assertTrue(await pilot.click("#confirm"))
+            self.assertFalse(app.session.closing, "Quit must warn about draft loss before closing")
+            self.assertIn("Unresolved draft text", self.screen_text(app))
+            self.assertIn("discarded.", self.screen_text(app))
+            self.assertEqual(app.focused.id, "cancel")
+            self.assertEqual(str(app.focused.label), "Stay")
+            self.assertEqual(str(app.screen.query_one("#confirm", Button).label), "Quit")
+
+            await pilot.press("enter")
+            self.assertIs(app.screen, app.dashboard)
+            editor = app.screen.query_one("#draft", TextArea)
+            self.assertEqual(editor.text, draft)
+            self.assertTrue(await pilot.click("#recover"))
+            await self.wait_for(pilot, lambda: not editor.read_only)
+            self.assertFalse(app.session.index.error)
+            self.assertEqual(editor.text, "invalid")
+            self.assertEqual([row.url for row in self.disk.read()], [URL + "B", URL + "C"])
+
     async def test_quit_is_dashboard_only_and_preserves_pending(self):
         row, pending = [self.entry(name) for name in "AB"]
         self.disk.save([row, pending])

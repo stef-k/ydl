@@ -472,26 +472,35 @@ class YdlApp(App[int]):
     def action_quit(self):
         if self.dashboard is None or self.screen is not self.dashboard or self.session.closing:
             return
+        if self.quit_dialog is not None:
+            return
         active = self.adding or self.session.busy or self.session.backend.check is not None
-        draft = self.dashboard.query_one("#draft", TextArea).text
-        loss = self.session.index.error and (draft.strip() or self.recovery_draft or self.session.index.buffer)
+        loss = self.quit_would_discard_recovery()
         if active or loss:
             question = "Stop the current operation and quit?" if active else "Quit ydl?"
             if loss:
                 question += " Unresolved draft text or buffered outcomes will be discarded."
             self.quit_answered.clear()
             self.quit_dialog = Confirm("Quit ydl", question, "Stop and quit" if active else "Quit", "Stay", quits=True)
-            self.show(self.quit_dialog, self.answer_quit)
+            self.show(self.quit_dialog, lambda answer: self.answer_quit(answer, recovery_warned=loss))
         else:
             self.answer_quit(True)
 
-    def answer_quit(self, answer):
+    def quit_would_discard_recovery(self):
+        if not self.session.index.error:
+            return False
+        draft = self.dashboard.query_one("#draft", TextArea).text
+        return bool(draft.strip() or self.recovery_draft or self.session.index.buffer)
+
+    def answer_quit(self, answer, *, recovery_warned=False):
         self.quit_dialog = None
-        if answer:
+        if not answer:
+            self.quit_answered.set()
+        elif not recovery_warned and self.quit_would_discard_recovery():
+            self.action_quit()
+        else:
             self.session.begin_close()
             self.own(self.shutdown())
-        else:
-            self.quit_answered.set()
 
     async def shutdown(self):
         await self.session.stop(quitting=True)
