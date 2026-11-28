@@ -437,17 +437,17 @@ while True:
             self.assertIn("last", url)
             return {"title": "Last video"}
 
-        async def available(command, url, *args):
-            if url.endswith("=gone"):
+        async def available(command, video_id, *args, **kwargs):
+            if video_id == "gone":
                 raise YdlError("Video unavailable")
-            return await deliver(command, url, *args)
+            return await deliver(command, video_id, *args, **kwargs)
 
         transfer.side_effect = available
         session = await self.start(new, saved, last)
         with patch.object(media, "metadata", side_effect=metadata) as lookup:
             await self.run_queue(session, "start")
             self.assertEqual(lookup.await_count, 2)
-        self.assertEqual([call.args[1].split("=")[-1] for call in transfer.call_args_list], ["gone", "stillHere", "last"])
+        self.assertEqual([call.args[1] for call in transfer.call_args_list], ["gone", "stillHere", "last"])
         self.assertEqual(completed.stat().st_ino, identity)
         self.assertEqual([row.status for row in self.disk.read()], ["failed_before_plan", "failed", "complete"])
         self.assertEqual([row.id for row in self.disk.read()], [new.id, saved.id, last.id])
@@ -545,16 +545,16 @@ while True:
         transfer = self.offline_media()
         deliver = transfer.side_effect
 
-        async def occupy(command, url, *args):
-            source = await deliver(command, url, *args)
-            if url.endswith("=blocked"):
+        async def occupy(command, video_id, *args, **kwargs):
+            result = await deliver(command, video_id, *args, **kwargs)
+            if video_id == "blocked":
                 target.write_bytes(b"Existing file")
-            return source
+            return result
 
         transfer.side_effect = occupy
         with patch.object(media, "metadata", return_value={"title": "Last video"}):
             await self.run_queue(session, "start")
-        self.assertEqual([call.args[1].split("=")[-1] for call in transfer.call_args_list], ["blocked", "nextTrack", "last"])
+        self.assertEqual([call.args[1] for call in transfer.call_args_list], ["blocked", "nextTrack", "last"])
         self.assertEqual(target.read_bytes(), b"Existing file")
         item = self.store.load(claimed.id).items[0]
         self.assertEqual(item.video_target, target.name)

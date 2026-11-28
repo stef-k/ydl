@@ -25,10 +25,10 @@ class QueueRemovalTests(SessionCase):
         transfer = self.offline_media()
         deliver = transfer.side_effect
 
-        async def partial(command, url, *args):
-            if url.endswith("=Second"):
+        async def partial(command, video_id, *args, **kwargs):
+            if video_id == "Second":
                 raise YdlError("Track unavailable")
-            return await deliver(command, url, *args)
+            return await deliver(command, video_id, *args, **kwargs)
 
         transfer.side_effect = partial
         session = await self.start(playlist, removable, kept)

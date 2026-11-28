@@ -77,12 +77,12 @@ class SessionCase(unittest.IsolatedAsyncioTestCase):
         await session.serial
 
     def offline_media(self):
-        async def transfer(_command, url, staging, keep_video, _progress, _log):
+        async def transfer(_command, video_id, staging, keep_video, _progress, _log, *, collect_metadata=False):
             source = staging / ("source.mkv" if keep_video else "source.wav")
-            source.write_text(url)
-            return source
+            source.write_text(video_id)
+            return source, None
 
-        async def convert(_tool, source, output, _quality, _log):
+        async def convert(_ffmpeg, _ffprobe, source, output, _quality, _candidates, _log):
             output.write_bytes(source.read_bytes())
 
         deps = runner.Dependencies([], "offline-ffmpeg", "offline-ffprobe")
