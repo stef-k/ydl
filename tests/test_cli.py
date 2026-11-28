@@ -12,7 +12,6 @@ import shutil
 import signal
 import struct
 import subprocess
-import sys
 import tempfile
 import termios
 import time
@@ -21,24 +20,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
+import cli_fixture
+from cli_fixture import COMMAND, ENTRY, MIXED, PLAYLIST, VIDEO
 from ydl import config, jobs, media, runner
 from ydl.media import parse_url, playlist_size
 from ydl.models import Settings, YdlError
-
-VIDEO = "https://www.youtube.com/watch?v=testVideo01"
-MIXED = VIDEO + "&list=testPlaylist01"
-PLAYLIST = "https://www.youtube.com/playlist?list=testPlaylist01"
-ENTRY = {"id": "testVideo01", "title": "Sample song"}
-COMMAND = [sys.executable, "-m", "ydl"]
-
-
-def make_media(folder):
-    common = ["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
-              "-i", "sine=frequency=440:duration=0.15"]
-    subprocess.run([*common, str(folder / "source.wav")], check=True)
-    subprocess.run([*common, "-f", "lavfi", "-i", "color=size=32x32:duration=0.15",
-                    "-c:v", "mpeg4", str(folder / "source.mkv")], check=True)
-
 
 def music_record(**overrides):
     return {"id": ENTRY["id"], "title": "Back Around", "track": "Back Around",
@@ -217,68 +203,7 @@ class PlaylistDestinationTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe required")
-class CliTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.fixtures = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(cls.fixtures.cleanup)
-        make_media(Path(cls.fixtures.name))
-
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
-        self.output = self.root / "downloads"
-        self.scenario = self.root / "scenario.json"
-        private_bin = self.root / "data" / "ydl" / "bin"
-        private_bin.mkdir(parents=True)
-        self.backend = private_bin / "yt-dlp"
-        shutil.copyfile(Path(__file__).with_name("fake_ytdlp.py"), self.backend)
-        self.backend.chmod(0o700)
-        self.bin = self.root / "bin"
-        self.bin.mkdir()
-        self.deno = self.bin / "deno"
-        self.deno.write_text("#!/bin/sh\nprintf 'deno 2.4.0\\n'\n")
-        self.deno.chmod(0o700)
-        for name in ("source.wav", "source.mkv"):
-            shutil.copyfile(Path(self.fixtures.name) / name, self.root / name)
-        self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
-                    "XDG_CONFIG_HOME": str(self.root / "config"),
-                    "XDG_DATA_HOME": str(self.root / "data"),
-                    "XDG_STATE_HOME": str(self.root / "state"),
-                    "YDL_TEST_SCENARIO": str(self.root), "TERM": "xterm"}
-        self.write_scenario(entries=[ENTRY])
-
-    def write_scenario(self, **kwargs):
-        self.scenario.write_text(json.dumps(kwargs))
-
-    def invoke(self, *args):
-        return subprocess.run([*COMMAND, *args], env=self.env, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=20, check=False)
-
-    def fetch(self, url=VIDEO, *flags):
-        return self.invoke(url, "--no-update", "--output", str(self.output), *flags)
-
-    def check_code(self, result, code):
-        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
-
-    def calls(self):
-        path = self.root / "calls"
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
-
-    def job_id(self):
-        directory = self.root / "state" / "ydl" / "jobs"
-        return next(directory.glob("*.json")).stem
-
-    def format_tags(self, path):
-        result = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format_tags",
-                                          "-of", "json", str(path)], timeout=10)
-        return json.loads(result)["format"].get("tags", {})
-
-    def assert_mp3_tags(self, path, **expected):
-        tags = self.format_tags(path)
-        self.assertEqual({key: tags[key] for key in ("title", "artist", "album") if key in tags}, expected)
-
+class CliTests(cli_fixture.CliFixture):
     def test_eligible_music_tags_filter_artists_and_leave_other_youtube_fields_unused(self):
         record = music_record(title=" Back Around ", artists=["half·alive", "", None, "Guest", " \t", "Bad\x00",
                                                             "\ud800", 123],
@@ -290,19 +215,38 @@ class CliTests(unittest.TestCase):
         self.assertTrue({"date", "year", "track"}.isdisjoint(self.format_tags(mp3)))
 
     def test_embedded_tags_take_precedence_per_tag_and_follow_the_selected_stream(self):
+        title = "  Container \ufffe title  "
+        artist = "  Selected #;=\\ artist\r\nSecond line  "
+        source = self.root / "tagged.mka"
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(self.root / "source.wav"),
-                        "-map", "0:a:0", "-map", "0:a:0", "-c", "copy", "-metadata", "TITLE=  Container title  ",
-                        "-metadata", "ARTIST=   ", "-metadata", "date=2001", "-metadata", "track=4",
-                        "-metadata:s:a:0", "TITLE=Stream title", "-metadata:s:a:0", "ARTIST=  Selected artist  ",
+                        "-map", "0:a:0", "-map", "0:a:0", "-c", "copy", "-metadata", f"TITLE={title}",
+                        "-metadata", "ARTIST=InvalidArtist", "-metadata", "date=2001", "-metadata", "track=4",
+                        "-metadata", "creation_time=2001-01-01T00:00:00Z",
+                        "-metadata:s:a:0", "TITLE=Stream title", "-metadata:s:a:0", f"ARTIST={artist}",
                         "-metadata:s:a:1", "ARTIST=Other artist", "-metadata:s:a:1", "ALBUM=Other album",
-                        str(self.root / "tagged.mka")], check=True)
-        self.write_scenario(source="tagged.mka", transfer_records={ENTRY["id"]: [music_record()]})
+                        str(source)], check=True)
+        # Matroska retains the invalid byte in the container artist tag.
+        source.write_bytes(source.read_bytes().replace(b"InvalidArtist", b"Invalid\xffrtist"))
+        self.write_scenario(source=source.name, transfer_records={ENTRY["id"]: [music_record()]})
         self.check_code(self.fetch(VIDEO, "--yes"), 0)
         mp3 = self.output / "Sample song.mp3"
-        self.assert_mp3_tags(mp3, title="  Container title  ", artist="  Selected artist  ",
-                             album="Conditions Of A Punk")
-        self.assertEqual(self.format_tags(mp3)["date"], "2001")
-        self.assertEqual(self.format_tags(mp3)["track"], "4")
+        self.assert_mp3_tags(mp3, title=title, artist=artist, album="Conditions Of A Punk")
+        tags = self.format_tags(mp3)
+        self.assertEqual(tags["date"], "2001")
+        self.assertEqual(tags["track"], "4")
+        self.assertNotIn("creation_time", tags)
+
+    def test_long_embedded_title_survives_conversion(self):
+        title = "L" * 132_000
+        metadata = self.root / "tags.ffmeta"
+        metadata.write_text(f";FFMETADATA1\ntitle={title}\n", encoding="utf-8")
+        source = self.root / "long.mka"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(self.root / "source.wav"),
+                        "-f", "ffmetadata", "-i", str(metadata), "-map_metadata", "1",
+                        "-c:a", "copy", str(source)], check=True)
+        self.write_scenario(source=source.name)
+        self.check_code(self.fetch(VIDEO, "--yes"), 0)
+        self.assert_mp3_tags(self.output / "Sample song.mp3", title=title)
 
     def test_ordinary_and_incidental_music_use_the_full_video_title(self):
         title = "Nina Simone - Sinnerman (Live)"
@@ -323,7 +267,7 @@ class CliTests(unittest.TestCase):
                 mp3.unlink()
 
     def test_playlist_tags_use_per_video_records_and_fall_back_to_raw_flat_titles(self):
-        entries = [{"id": f"video{position}", "title": f"Flat / title {position}"} for position in range(1, 8)]
+        entries = [{"id": f"video{position}", "title": f"Flat / title {position}"} for position in range(1, 9)]
         first = music_record(id="video1")
         second = music_record(id="video2", title="Second track", track="Second track",
                               artists=["Second artist"], album="  Second album  ")
@@ -331,6 +275,7 @@ class CliTests(unittest.TestCase):
             "video1": [first], "video2": [second], "video4": ["{malformed"], "video5": [first],
             "video6": [music_record(id="video6"), "{duplicate"],
             "video7": ['{"id": "video7", "title": "Wrong title", "album": NaN}'],
+            "video8": ['{"id": "video8", "title": "Invalid\udcfftitle"}'],
         })
         self.check_code(self.fetch(PLAYLIST, "--yes"), 0)
         folder = self.output / "Test playlist"
@@ -338,11 +283,11 @@ class CliTests(unittest.TestCase):
                              album="Conditions Of A Punk")
         self.assert_mp3_tags(folder / "002 - Flat _ title 2.mp3", title="Second track", artist="Second artist",
                              album="  Second album  ")
-        for position in range(3, 8):
+        for position in range(3, len(entries) + 1):
             self.assert_mp3_tags(folder / f"{position:03d} - Flat _ title {position}.mp3",
                                  title=entries[position - 1]["title"])
         calls = self.calls()
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), len(entries) + 1)
         self.assertTrue(all("--dump-single-json" not in call for call in calls[1:]))
 
     def test_interrupted_conversion_and_regeneration_reuse_saved_candidates(self):

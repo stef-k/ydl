@@ -51,5 +51,7 @@ print('ydl:download:{"status":"downloading","downloaded_bytes":68,"total_bytes":
 print('ydl:postprocess:{"status":"started"}')
 print("ydl:path:" + json.dumps(str(target)))
 if any(arg.startswith("after_move:ydl:metadata:") for arg in args):
+    sys.stdout.flush()
     for record in settings.get("transfer_records", {}).get(video, []):
-        print("ydl:metadata:" + (record if isinstance(record, str) else json.dumps(record)))
+        payload = record if isinstance(record, str) else json.dumps(record)
+        sys.stdout.buffer.write(f"ydl:metadata:{payload}\n".encode("utf-8", errors="surrogateescape"))

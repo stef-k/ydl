@@ -47,12 +47,13 @@ async def read_lines(reader, callback):
         lines = (buffer + chunk).split(b"\n")
         buffer = lines.pop()
         for line in lines:
-            callback(line.decode(errors="replace").rstrip("\r"))
+            callback(line.rstrip(b"\r"))
     if buffer:
-        callback(buffer.decode(errors="replace"))
+        callback(buffer)
 
 
 async def run(args, *, timeout=None, log=None, on_line=None):
+    """Run a child, streaming stdout lines as bytes when a callback is supplied."""
     async with asyncio.timeout(timeout):
         return await run_child(args, log, on_line)
 
@@ -108,7 +109,8 @@ async def drain_after_stop(process, readers, pending):
 async def collect(process, log, on_line, lifetime):
     tail = deque(maxlen=40)
 
-    def diagnostic(line):
+    def diagnostic(raw):
+        line = raw.decode(errors="replace")
         tail.append(line)
         if log is not None:
             log.write(line)

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ydl import config
 from ydl.tui_queue import Entry, QueueFile
-from test_cli import make_media
+from cli_fixture import make_media
 
 COMMAND = [sys.executable, "-m", "ydl"]
 
