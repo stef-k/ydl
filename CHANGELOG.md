@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.4.0 - 2026-11-28
 
-- Fill MP3 title, artist, and album in CLI and TUI downloads and retries. Prefer
-  embedded tags, then use the YouTube video title and eligible music credits.
-  Reuse saved YouTube candidates when regenerating an MP3.
+- Fill missing MP3 title, artist, and album tags in CLI and TUI downloads and
+  retries. Prefer tags embedded in the source, then use the YouTube video title
+  and eligible music credits. Reuse saved YouTube metadata when regenerating a
+  missing MP3.
 
 ## 1.3.0 - 2026-11-27
 
