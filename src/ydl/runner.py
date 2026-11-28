@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from . import backend, jobs, media
+from . import backend, jobs, media, mp3_tags
 from .config import SaveError, output_path, quality_value
 from .models import Decide, Decision, Emit, Event, Result, Settings, YdlError
 from .process import Log
@@ -118,9 +118,10 @@ def planned_items(entries, playlist):
         entry = entry if isinstance(entry, dict) else {}
         video = media.entry_id(entry)
         title = entry.get("title")
+        raw_title = mp3_tags.usable_text(title)
         if not isinstance(title, str) or not title:
             title = video or "Unavailable entry"
-        items.append(jobs.make_item(position, video, title, playlist))
+        items.append(jobs.make_item(position, video, title, playlist, raw_title=raw_title))
     return items
 
 
@@ -260,14 +261,21 @@ def numeric(value):
     return value if type(value) in (int, float) and 0 <= value < float("inf") else None
 
 
-async def staged_source(job, item, deps, emit, store, staging, log):
-    if source := jobs.find_source(staging, item):
+async def staged_source(job, item, deps, emit, store, staging, log, *, needs_mp3):
+    resolve_tags = needs_mp3 and item.mp3_tags is None
+    source = jobs.find_source(staging, item)
+    if source is not None and not resolve_tags:
         return source
-    emit(item_event(job, item, "downloading"))
-    url = f"https://www.youtube.com/watch?v={item.video_id}"
-    callback = lambda kind, data: progress(job, item, emit, kind, data)
-    source = await media.transfer(deps.command, url, staging, job.keep_video, callback, log)
+
+    info = None
+    if source is None:
+        emit(item_event(job, item, "downloading"))
+        callback = lambda kind, data: progress(job, item, emit, kind, data)
+        source, info = await media.transfer(deps.command, item.video_id, staging, job.keep_video, callback, log,
+                                           collect_metadata=resolve_tags)
     item.source = source.name
+    if resolve_tags:
+        item.mp3_tags = mp3_tags.youtube_candidates(info, item.raw_title)
     store.save(job)
     return source
 
@@ -287,11 +295,11 @@ def video_destination(job, item, source, pending, store):
     return target
 
 
-async def staged_outputs(job, pending, source, deps, staging, target, log):
+async def staged_outputs(job, pending, source, deps, staging, target, log, *, candidates):
     outputs = {}
     if "mp3" in pending:
         mp3 = staging / "verified.mp3"
-        await media.convert(deps.ffmpeg, source, mp3, job.quality, log)
+        await media.convert(deps.ffmpeg, deps.ffprobe, source, mp3, job.quality, candidates, log)
         await media.verify_output(deps.ffprobe, mp3, "mp3", log)
         outputs["mp3"] = mp3, pending["mp3"]
     if target is not None:
@@ -309,10 +317,10 @@ async def process_item(job, item, pending, store, deps, emit, log, guard):
     if guard:
         guard.check()
     staging = jobs.staging_path(job, item)
-    source = await staged_source(job, item, deps, emit, store, staging, log)
+    source = await staged_source(job, item, deps, emit, store, staging, log, needs_mp3="mp3" in pending)
     emit(item_event(job, item, "converting"))
     target = video_destination(job, item, source, pending, store)
-    outputs = await staged_outputs(job, pending, source, deps, staging, target, log)
+    outputs = await staged_outputs(job, pending, source, deps, staging, target, log, candidates=item.mp3_tags)
     await jobs.publish(store, job, item, outputs, guard)
     if guard:
         guard.check()

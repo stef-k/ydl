@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fill MP3 title, artist, and album in CLI and TUI downloads and retries. Prefer
+  embedded tags, then use the YouTube video title and eligible music credits.
+  Reuse saved YouTube candidates when regenerating an MP3.
+
 ## 1.3.0 - 2026-11-27
 
 - Save pasted URLs directly from the TUI dashboard with **Add to Queue**.

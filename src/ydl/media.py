@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from . import mp3_tags
 from .backend import backend_command
 from .models import YdlError
 from .process import run
@@ -14,6 +15,7 @@ PLAYLIST_LIMIT = 50
 METADATA_TIMEOUT = 120
 ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+TRANSFER_METADATA = "ydl:metadata:"
 
 
 @dataclass(frozen=True)
@@ -158,17 +160,37 @@ def progress_record(line, log):
         return None
 
 
-async def transfer(command, url, staging, keep_video, on_progress, log):
+def reject_json_constant(value):
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def transfer_metadata(records, video_id):
+    if len(records) != 1:
+        return None
+    try:
+        record = json.loads(records[0], parse_constant=reject_json_constant)
+    except (ValueError, RecursionError):
+        return None
+    return record if isinstance(record, dict) and record.get("id") == video_id else None
+
+
+async def transfer(command, video_id, staging, keep_video, on_progress, log, *, collect_metadata=False):
     args = [*command, "--no-playlist", "--continue", "--no-overwrites",
             "-f", "bv*+ba/b" if keep_video else "bestaudio/best",
             "--progress", "--newline", "--progress-delta", "0.2",
             "--progress-template", "download:ydl:download:%(progress)j",
             "--progress-template", "postprocess:ydl:postprocess:%(progress)j",
-            "--print", "after_move:ydl:path:%(filepath)j",
-            "-o", str(staging / "source.%(ext)s"), "--", url]
+            "--print", "after_move:ydl:path:%(filepath)j"]
+    if collect_metadata:
+        args.extend(["--print", f"after_move:{TRANSFER_METADATA}" "%(.{id,title,track,description,artists,album})j"])
+    args.extend(["-o", str(staging / "source.%(ext)s"), "--", f"https://www.youtube.com/watch?v={video_id}"])
     sources = []
+    records = []
 
     def on_line(line):
+        if collect_metadata and line.startswith(TRANSFER_METADATA):
+            records.append(line.removeprefix(TRANSFER_METADATA))
+            return
         if not line.startswith("ydl:") or line.count(":") < 2:
             log.write(line)
             return
@@ -189,14 +211,19 @@ async def transfer(command, url, staging, keep_video, on_progress, log):
     path = sources[-1]
     if path.is_symlink() or not path.is_file():
         raise YdlError("The staged source file is missing or invalid.")
-    return path
+    return path, transfer_metadata(records, video_id)
 
 
-async def convert(ffmpeg, source, output, quality, log):
+async def convert(ffmpeg, ffprobe, source, output, quality, candidates, log):
+    tags = await source_tags(ffprobe, source, candidates, log)
+    metadata = []
+    for key in mp3_tags.MANAGED_TAGS:
+        # An empty assignment removes an unusable tag copied from the source.
+        metadata.extend(["-metadata", f"{key}={tags.get(key, '')}"])
     mode = "-b:a" if quality.endswith("K") else "-q:a"
     value = quality.lower() if mode == "-b:a" else quality
     result = await run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(source),
-                        "-map", "0:a:0", "-c:a", "libmp3lame", mode, value, str(output)], log=log)
+                        "-map", "0:a:0", "-c:a", "libmp3lame", mode, value, *metadata, str(output)], log=log)
     if result.code:
         raise YdlError("MP3 conversion failed. Check the job log for FFmpeg details.")
 
@@ -208,12 +235,35 @@ async def remux(ffmpeg, source, video, log):
         raise YdlError(f"Could not recreate the saved {video.suffix} container without re-encoding video.")
 
 
-async def verify_output(ffprobe, path, kind, log):
+async def probe(ffprobe, path, log, error):
     result = await run([ffprobe, "-v", "error", "-show_format", "-show_streams",
                         "-of", "json", str(path)], timeout=30, log=log)
+    if result.code:
+        raise YdlError(error)
     try:
         info = json.loads(result.stdout)
-        streams = info["streams"]
+        if not isinstance(info["format"], dict) or not isinstance(info["streams"], list):
+            raise ValueError("invalid media probe result")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise YdlError(error) from exc
+    return info
+
+
+async def source_tags(ffprobe, source, candidates, log):
+    error = "FFprobe could not read tags from the staged source. Check the job log for details."
+    info = await probe(ffprobe, source, log, error)
+    try:
+        audio = next(stream for stream in info["streams"] if stream.get("codec_type") == "audio")
+        return mp3_tags.resolve(info["format"].get("tags", {}), audio.get("tags", {}), candidates)
+    except (StopIteration, AttributeError) as exc:
+        raise YdlError(error) from exc
+
+
+async def verify_output(ffprobe, path, kind, log):
+    error = f"FFprobe could not verify the staged {kind} output."
+    info = await probe(ffprobe, path, log, error)
+    streams = info["streams"]
+    try:
         audio = [stream for stream in streams if stream.get("codec_type") == "audio"]
         if kind == "mp3":
             valid = info["format"]["format_name"] == "mp3" and any(s.get("codec_name") == "mp3" for s in audio)
@@ -222,5 +272,5 @@ async def verify_output(ffprobe, path, kind, log):
                                   not s.get("disposition", {}).get("attached_pic") for s in streams)
     except (ValueError, KeyError, TypeError, AttributeError):
         valid = False
-    if result.code or not valid:
-        raise YdlError(f"FFprobe could not verify the staged {kind} output.")
+    if not valid:
+        raise YdlError(error)

@@ -43,9 +43,13 @@ if settings.get("hang"):
     (scenario / "child_pid").write_text(str(child.pid))
     time.sleep(60)
     sys.exit(1)
-source = scenario / ("source.mkv" if format_selection == "bv*+ba/b" else "source.wav")
+default_source = "source.mkv" if format_selection == "bv*+ba/b" else "source.wav"
+source = scenario / settings.get("source", default_source)
 target = target.with_suffix("").with_name("source" + source.suffix)
 shutil.copyfile(source, target)
 print('ydl:download:{"status":"downloading","downloaded_bytes":68,"total_bytes":100,"speed":1024,"eta":12}')
 print('ydl:postprocess:{"status":"started"}')
 print("ydl:path:" + json.dumps(str(target)))
+if any(arg.startswith("after_move:ydl:metadata:") for arg in args):
+    for record in settings.get("transfer_records", {}).get(video, []):
+        print("ydl:metadata:" + (record if isinstance(record, str) else json.dumps(record)))
