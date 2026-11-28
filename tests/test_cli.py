@@ -205,13 +205,13 @@ class PlaylistDestinationTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe required")
 class CliTests(cli_fixture.CliFixture):
     def test_eligible_music_tags_filter_artists_and_leave_other_youtube_fields_unused(self):
-        record = music_record(title=" Back Around ", artists=["half·alive", "", None, "Guest", " \t", "Bad\x00",
+        record = music_record(title=" Back Around ", artists=["half·alive", "", None, "Guest\\", " \t", "Bad\x00",
                                                             "\ud800", 123],
                               release_date="20221202", release_year=2021, track_number=7)
         self.write_scenario(transfer_records={ENTRY["id"]: [record]})
         self.check_code(self.fetch(VIDEO, "--yes"), 0)
         mp3 = self.output / "Sample song.mp3"
-        self.assert_mp3_tags(mp3, title="Back Around", artist="half·alive / Guest", album="Conditions Of A Punk")
+        self.assert_mp3_tags(mp3, title="Back Around", artist="half·alive / Guest\\", album="Conditions Of A Punk")
         self.assertTrue({"date", "year", "track"}.isdisjoint(self.format_tags(mp3)))
 
     def test_embedded_tags_take_precedence_per_tag_and_follow_the_selected_stream(self):
@@ -237,9 +237,10 @@ class CliTests(cli_fixture.CliFixture):
         self.assertNotIn("creation_time", tags)
 
     def test_long_embedded_title_survives_conversion(self):
-        title = "L" * 132_000
+        prefix = "L" * 131_999
+        title = prefix + "\\"
         metadata = self.root / "tags.ffmeta"
-        metadata.write_text(f";FFMETADATA1\ntitle={title}\n", encoding="utf-8")
+        metadata.write_text(f";FFMETADATA1\ntitle={prefix}\\\\", encoding="utf-8")
         source = self.root / "long.mka"
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(self.root / "source.wav"),
                         "-f", "ffmetadata", "-i", str(metadata), "-map_metadata", "1",

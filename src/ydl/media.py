@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
 from . import mp3_tags
@@ -228,15 +228,19 @@ async def convert(ffmpeg, ffprobe, source, output, quality, candidates, log):
     # requires restoring FFmpeg's automatic global metadata exclusions.
     clear = [key for key in mp3_tags.MANAGED_TAGS if key not in tags]
     metadata = [arg for key in (*clear, *FFMPEG_COPY_EXCLUSIONS) for arg in ("-metadata", f"{key}=")]
-    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent) as tag_file:
-        tag_file.write(";FFMETADATA1\n")
-        for key, text in tags.items():
-            tag_file.write(f"{key}={text.translate(FFMETADATA_ESCAPES)}\n")
-        tag_file.flush()
+    with TemporaryDirectory(dir=output.parent) as tag_dir:
+        inputs = []
+        mappings = []
+        for index, (key, text) in enumerate(tags.items(), start=1):
+            tag_file = Path(tag_dir) / f"{key}.ffmeta"
+            # FFmpeg treats a newline after an escaped backslash as a continuation.
+            # End each tag at EOF so a trailing backslash cannot join two records.
+            tag_file.write_text(f";FFMETADATA1\n{key}={text.translate(FFMETADATA_ESCAPES)}", encoding="utf-8")
+            inputs.extend(["-f", "ffmetadata", "-i", str(tag_file)])
+            mappings.extend(["-map_metadata", str(index)])
         # First metadata mapping wins per key. The source supplies all remaining tags.
         result = await run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(source),
-                            "-f", "ffmetadata", "-i", tag_file.name, "-map", "0:a:0",
-                            "-map_metadata", "1", "-map_metadata", "0", *metadata,
+                            *inputs, "-map", "0:a:0", *mappings, "-map_metadata", "0", *metadata,
                             "-c:a", "libmp3lame", mode, value, str(output)], log=log)
     if result.code:
         raise YdlError("MP3 conversion failed. Check the job log for FFmpeg details.")
