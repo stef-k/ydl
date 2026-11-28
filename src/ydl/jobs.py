@@ -22,6 +22,7 @@ from threading import Event
 from .config import admitted_read, atomic_write, quality_value
 from .media import ID
 from .models import DestinationChanged, Settings, YdlError
+from .mp3_tags import MANAGED_TAGS, usable_text
 from .playlist_folders import PLAYLIST_OWNER, claim_exclusive_folder, claim_pending, open_directory
 from .process import inherit_lock
 
@@ -60,6 +61,8 @@ class Item:
     outputs: dict[str, dict[str, str]] = field(default_factory=dict)
     source: str | None = None
     video_target: str | None = None
+    raw_title: str | None = None
+    mp3_tags: dict[str, str] | None = None
 
 
 @dataclass
@@ -95,10 +98,10 @@ def safe_name(text, fallback):
     return clean.encode()[:120].decode(errors="ignore").rstrip(" .") or fallback
 
 
-def make_item(position, video_id, title, playlist):
+def make_item(position, video_id, title, playlist, *, raw_title=None):
     label = safe_name(title, "Untitled")
     prefix = f"{position:03d} - " if playlist else ""
-    return Item(position, video_id, title, f"{prefix}{label}")
+    return Item(position, video_id, title, f"{prefix}{label}", raw_title=raw_title)
 
 
 def component(name):
@@ -283,6 +286,12 @@ def validate_item(item, position):
     for name in (item.source, item.video_target):
         if name is not None:
             component(name)
+    if item.raw_title is not None and usable_text(item.raw_title) is None:
+        raise ValueError("invalid saved raw video title")
+    tags = item.mp3_tags
+    if tags is not None and (not isinstance(tags, dict) or any(
+            key not in MANAGED_TAGS or usable_text(value) is None for key, value in tags.items())):
+        raise ValueError("invalid saved MP3 tags")
     for kind, receipt in item.outputs.items():
         if kind not in ("mp3", "video") or not re.fullmatch(r"[0-9a-f]{64}", receipt["sha256"]):
             raise ValueError("invalid saved output receipt")

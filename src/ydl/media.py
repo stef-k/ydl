@@ -4,8 +4,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
+from . import mp3_tags
 from .backend import backend_command
 from .models import YdlError
 from .process import run
@@ -14,6 +16,10 @@ PLAYLIST_LIMIT = 50
 METADATA_TIMEOUT = 120
 ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+TRANSFER_METADATA = "ydl:metadata:"
+FFMETADATA_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\=;#\r\n"})
+# FFmpeg omits these fields when copying global metadata automatically.
+FFMPEG_COPY_EXCLUSIONS = ("creation_time", "company_name", "product_name", "product_version")
 
 
 @dataclass(frozen=True)
@@ -158,17 +164,39 @@ def progress_record(line, log):
         return None
 
 
-async def transfer(command, url, staging, keep_video, on_progress, log):
+def reject_json_constant(value):
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def transfer_metadata(records, video_id):
+    if len(records) != 1:
+        return None
+    try:
+        record = json.loads(records[0].decode("utf-8"), parse_constant=reject_json_constant)
+    except (ValueError, RecursionError):
+        return None
+    return record if isinstance(record, dict) and record.get("id") == video_id else None
+
+
+async def transfer(command, video_id, staging, keep_video, on_progress, log, *, collect_metadata=False):
     args = [*command, "--no-playlist", "--continue", "--no-overwrites",
             "-f", "bv*+ba/b" if keep_video else "bestaudio/best",
             "--progress", "--newline", "--progress-delta", "0.2",
             "--progress-template", "download:ydl:download:%(progress)j",
             "--progress-template", "postprocess:ydl:postprocess:%(progress)j",
-            "--print", "after_move:ydl:path:%(filepath)j",
-            "-o", str(staging / "source.%(ext)s"), "--", url]
+            "--print", "after_move:ydl:path:%(filepath)j"]
+    if collect_metadata:
+        args.extend(["--print", f"after_move:{TRANSFER_METADATA}" "%(.{id,title,track,description,artists,album})j"])
+    args.extend(["-o", str(staging / "source.%(ext)s"), "--", f"https://www.youtube.com/watch?v={video_id}"])
     sources = []
+    records = []
+    metadata_prefix = TRANSFER_METADATA.encode("ascii")
 
-    def on_line(line):
+    def on_line(raw):
+        if collect_metadata and raw.startswith(metadata_prefix):
+            records.append(raw.removeprefix(metadata_prefix))
+            return
+        line = raw.decode(errors="replace")
         if not line.startswith("ydl:") or line.count(":") < 2:
             log.write(line)
             return
@@ -189,14 +217,31 @@ async def transfer(command, url, staging, keep_video, on_progress, log):
     path = sources[-1]
     if path.is_symlink() or not path.is_file():
         raise YdlError("The staged source file is missing or invalid.")
-    return path
+    return path, transfer_metadata(records, video_id)
 
 
-async def convert(ffmpeg, source, output, quality, log):
+async def convert(ffmpeg, ffprobe, source, output, quality, candidates, log):
+    tags = await source_tags(ffprobe, source, candidates, log)
     mode = "-b:a" if quality.endswith("K") else "-q:a"
     value = quality.lower() if mode == "-b:a" else quality
-    result = await run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(source),
-                        "-map", "0:a:0", "-c:a", "libmp3lame", mode, value, str(output)], log=log)
+    # An empty assignment clears unusable source tags. Explicit mapping also
+    # requires restoring FFmpeg's automatic global metadata exclusions.
+    clear = [key for key in mp3_tags.MANAGED_TAGS if key not in tags]
+    metadata = [arg for key in (*clear, *FFMPEG_COPY_EXCLUSIONS) for arg in ("-metadata", f"{key}=")]
+    with TemporaryDirectory(dir=output.parent) as tag_dir:
+        inputs = []
+        mappings = []
+        for index, (key, text) in enumerate(tags.items(), start=1):
+            tag_file = Path(tag_dir) / f"{key}.ffmeta"
+            # FFmpeg treats a newline after an escaped backslash as a continuation.
+            # End each tag at EOF so a trailing backslash cannot join two records.
+            tag_file.write_text(f";FFMETADATA1\n{key}={text.translate(FFMETADATA_ESCAPES)}", encoding="utf-8")
+            inputs.extend(["-f", "ffmetadata", "-i", str(tag_file)])
+            mappings.extend(["-map_metadata", str(index)])
+        # First metadata mapping wins per key. The source supplies all remaining tags.
+        result = await run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(source),
+                            *inputs, "-map", "0:a:0", *mappings, "-map_metadata", "0", *metadata,
+                            "-c:a", "libmp3lame", mode, value, str(output)], log=log)
     if result.code:
         raise YdlError("MP3 conversion failed. Check the job log for FFmpeg details.")
 
@@ -208,12 +253,36 @@ async def remux(ffmpeg, source, video, log):
         raise YdlError(f"Could not recreate the saved {video.suffix} container without re-encoding video.")
 
 
-async def verify_output(ffprobe, path, kind, log):
+async def probe(ffprobe, path, log, error):
     result = await run([ffprobe, "-v", "error", "-show_format", "-show_streams",
-                        "-of", "json", str(path)], timeout=30, log=log)
+                        "-of", "json=sv=ignore", str(path)], timeout=30, log=log)
+    if result.code:
+        raise YdlError(error)
     try:
-        info = json.loads(result.stdout)
-        streams = info["streams"]
+        # Keep original text and let tag validation reject malformed UTF-8.
+        info = json.loads(result.stdout.decode("utf-8", errors="surrogateescape"))
+        if not isinstance(info["format"], dict) or not isinstance(info["streams"], list):
+            raise ValueError("invalid media probe result")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise YdlError(error) from exc
+    return info
+
+
+async def source_tags(ffprobe, source, candidates, log):
+    error = "FFprobe could not read tags from the staged source. Check the job log for details."
+    info = await probe(ffprobe, source, log, error)
+    try:
+        audio = next(stream for stream in info["streams"] if stream.get("codec_type") == "audio")
+        return mp3_tags.resolve(info["format"].get("tags", {}), audio.get("tags", {}), candidates)
+    except (StopIteration, AttributeError) as exc:
+        raise YdlError(error) from exc
+
+
+async def verify_output(ffprobe, path, kind, log):
+    error = f"FFprobe could not verify the staged {kind} output."
+    info = await probe(ffprobe, path, log, error)
+    streams = info["streams"]
+    try:
         audio = [stream for stream in streams if stream.get("codec_type") == "audio"]
         if kind == "mp3":
             valid = info["format"]["format_name"] == "mp3" and any(s.get("codec_name") == "mp3" for s in audio)
@@ -222,5 +291,5 @@ async def verify_output(ffprobe, path, kind, log):
                                   not s.get("disposition", {}).get("attached_pic") for s in streams)
     except (ValueError, KeyError, TypeError, AttributeError):
         valid = False
-    if result.code or not valid:
-        raise YdlError(f"FFprobe could not verify the staged {kind} output.")
+    if not valid:
+        raise YdlError(error)

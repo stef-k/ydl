@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 - 2026-11-28
+
+- Fill missing MP3 title, artist, and album tags in CLI and TUI downloads and
+  retries. Prefer tags embedded in the source, then use the YouTube video title
+  and eligible music credits. Reuse saved YouTube metadata when regenerating a
+  missing MP3.
+
 ## 1.3.0 - 2026-11-27
 
 - Save pasted URLs directly from the TUI dashboard with **Add to Queue**.
